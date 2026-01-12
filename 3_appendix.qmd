@@ -1,14 +1,51 @@
 ---
 title: "Appendix: Complete Annotated Workflow and Implementation Details"
 subtitle: "A Hands-On Journey Through Pharmacometric Analysis with Pumas"
-engine: julia
-execute:
-  echo: true
 julia:
     exeflags: ["+Pumas@2.7.1"]
+execute:
+  echo: true
+  cache: true
+  error: false
+format:
+  html:
+    include-in-header:
+      text: |
+        <style>
+          .header-container {
+            width: 100%;
+          }
+          .logo {
+            display: block;
+            width: 150px;
+            margin-left: -2.5%;
+          }
+        </style>
+        <link rel = "shortcut icon" href = "https://pumas.ai/favicon.ico" />
+    include-before-body:
+      text: |
+        <div class="header-container">
+          <img src="https://pumas-assets.s3.amazonaws.com/CompanyLogos/PumasAI/RGB/PNG/Pumas+AI+Primary%404x.png" alt="Pumas Logo" class="logo">
+        </div>
+    self-contained-math: true
+    anchor-sections: true
+    theme: default
+    toc: true
+    toc-depth: 4
+    toc-expand: 2
+    toc-location: left
+    toc-title: Contents
+    number-sections: true
+    code-summary: Show/Hide Code
+embed-resources: true
+fig-format: svg
+fig-width: 8
+fig-height: 6
+license: CC BY-SA 4.0    
 ---
 
 ```{julia}
+#| output: false
 using Pumas
 using PumasUtilities
 using DataFramesMeta
@@ -16,12 +53,12 @@ using CSV
 using SummaryTables
 using CairoMakie
 using AlgebraOfGraphics
-using StableRNGs
+using Random
 ```
 
 ```{julia}
 #| output: false
-rng = StableRNG(5438)
+rng = Random.seed!(5438)
 ```
 
 # Introduction: Your Guide to Integrated Pharmacometric Analysis
@@ -32,7 +69,7 @@ Welcome to this comprehensive, hands-on tutorial that demonstrates the complete 
 
 This tutorial walks through the PKPD workflow, from raw clinical trial data through to simulation-based dose recommendations. This document demonstrates how Pumas integrates each stage of the workflow:
 
-**Data Preparation** → **Exploratory Analysis** → **Non-Compartmental Analysis** → **Population PK Modeling** → **PK-PD Integration** → **Simulation & Decision Support**
+**Data Preparation** → **Exploratory Analysis** → **Non-Compartmental Analysis** → **Population PK Modeling** → **PKPD Integration** → **Simulation & Decision Support**
 
 Along the way, you'll discover not just *what* to do, but *why* each step matters for robust drug development decisions.
 
@@ -46,7 +83,7 @@ Throughout this tutorial, we analyze data from a synthetic multiple ascending do
 - **Pharmacodynamics**: Biomarker measurements focused at steady state
 - **Covariates**: Sex and baseline body weight
 
-The data was generated using known ground truth parameters (see `00_data_simulation.qmd`), allowing us to validate our modeling approach. However, we'll analyze it exactly as if it came from a real clinical trial—you won't need to know the true parameters to follow along!
+The data was generated using known ground truth parameters (see `1_data_simulation.qmd`), allowing us to validate our modeling approach. However, we'll analyze it exactly as if it came from a real clinical trial—you won't need to know the true parameters to follow along!
 :::
 
 ## How to Use This Appendix
@@ -77,10 +114,10 @@ Our analysis follows the pharmacometric workflow presented in the main article (
 | **1** | Data Preparation & Quality Checks | A.2 (#sec-data-prep) |
 | **2** | Exploratory Data Analysis | A.2 (#sec-data-prep) |
 | **3** | Non-Compartmental Analysis | A.3 (#sec-nca) |
-| **4-8** | Population PK Model Development | A.4-A.9 (#sec-model-dev) |
-| **9-10** | Parameter Inference & Uncertainty | A.10 (#sec-param-infer) |
-| **11** | Pharmacodynamic Modeling | A.11 (#sec-pd-model) |
-| **12** | Simulation for Decision Support | A.12 (#sec-sim) |
+| **4-8** | Population PK Model Development | A.4 (#sec-pop-pk) |
+| **9-10** | Parameter Inference & Uncertainty | A.5 (#sec-uncertainty) |
+| **11** | Pharmacodynamic Modeling | A.6 (#sec-pkpd) |
+| **12** | Simulation for Decision Support | A.7 (#sec-simulation) |
 
 Let's begin our journey with the most fundamental step: preparing our data for analysis.
 
@@ -129,6 +166,7 @@ Here's a key Pumas philosophy: **One dataset, multiple populations**. Different 
 Non-compartmental analysis requires complete concentration-time profiles without gaps. We filter strategically:
 
 ```{julia}
+#| output: false
 df_nca = deepcopy(wide_data)
 
 # Filter to relevant rows: non-negative nominal time, active doses only, PK data only
@@ -147,7 +185,7 @@ end
 # Define units for NCA analysis
 timeu = u"d"      # days
 concu = u"ng/mL"  # nanograms per milliliter
-amtu = u"mg";      # milligrams
+amtu = u"mg"      # milligrams
 ```
 
 #### Create NCA Population Object
@@ -185,7 +223,7 @@ population_placebo = read_pumas(
     covariates=[:WEIGHTB, :SEX, :TRTACT, :DOSE]
 )
 
-# population without placebo data (for PK/PD model fitting)
+# population without placebo data (for PKPD model fitting)
 population = read_pumas(
     filter(r -> r.DOSE != 0, wide_data);  # Exclude placebo
     id=:ID,
@@ -203,7 +241,7 @@ population = read_pumas(
 
 **With placebo** (`population_placebo`): Use this to verify demographic balance across treatment groups. Imbalances in sex or weight distributions could confound covariate analyses.
 
-**Without placebo** (`population`): Use this for PK/PD model fitting. Placebo subjects have zero drug concentration—they don't inform PK parameters and can cause numerical issues during estimation.
+**Without placebo** (`population`): Use this for PKPD model fitting. Placebo subjects have zero drug concentration—they don't inform PK parameters and can cause numerical issues during estimation.
 :::
 
 ### What Just Happened? Input Validation
@@ -212,8 +250,8 @@ When you call `read_pumas()`, Pumas validates your data **immediately**:
 
 - ✓ Is time monotonically increasing within each subject?
 - ✓ Do all observation columns exist?
-- ✓ Are covariates complete (no missing values)?
-- ✓ Do dosing events have valid compartment assignments?
+
+A comprehensive list is provided in the [Data Representation Tutorial](https://tutorials.pumas.ai/html/LearningPaths/02-LP/04-Module/T1-DataRepresentation.html#how-read_pumas-builds-a-population){target="_blank"}.
 
 If anything is wrong, you get a clear error message pointing to the specific problem—**before** you waste hours on model fitting.
 
@@ -229,7 +267,7 @@ Before moving to exploratory analysis, verify:
 - [ ] Units (if needed) are explicitly defined and consistent
 - [ ] Placebo vs. active treatment populations are clearly distinguished
 
-**Next step**: Now that our data is properly structured, let's explore it visually to understand what we're modeling...
+**Next step**: Now that our data is properly structured, let's explore it visually to understand what we're modeling.
 
 ## A.2 (continued) Exploratory Data Analysis {#sec-eda}
 
@@ -441,7 +479,7 @@ mean_layer = data(df_mean) *
                  col=:TRTACT => "Dose") *
              visual(Lines; color=:red, linewidth=4)
 
-draw(
+plt_spgt_mean = draw(
     individual_layer + mean_layer;
     axis=(;
         xlabel="Time (hours)",
@@ -459,6 +497,8 @@ draw(
     ),
     figure=(; size=(1600, 1200), fontsize=28),
 )
+# save("./figures/fig2-concvstime.png", plt_spgt_mean; px_per_unit = 2)
+plt_spgt_mean
 ```
 
 This plot clearly shows the variability across subjects (gray lines) and how the mean profile (red line) represents the central tendency.
@@ -662,7 +702,7 @@ A key pharmacometric question is: **How does PD response relate to drug concentr
 ```{julia}
 #| out-width: 100%
 #| label: fig-er-scatter
-#| fig-cap: "Exposure-response relationship at steady state showing PD response plotted against PK concentration on a semi-logarithmic scale. Each point represents a matched PK-PD observation, colored by dose level. Monotonic increase in response with concentration suggests saturable stimulation mechanism. Overlap between dose groups at similar concentrations supports concentration-driven (rather than dose-driven) response."
+#| fig-cap: "Exposure-response relationship at steady state showing PD response plotted against PK concentration on a semi-logarithmic scale. Each point represents a matched PKPD observation, colored by dose level. Monotonic increase in response with concentration suggests saturable stimulation mechanism. Overlap between dose groups at similar concentrations supports concentration-driven (rather than dose-driven) response."
 # Filter to steady state observations with both PK and PD
 df_er_ss = @chain wide_data begin
     @rsubset begin
@@ -758,6 +798,8 @@ plt_er_ss_binned = draw(
     legend=(; position=:bottom),
     figure=(; size=(1000, 800), fontsize=24)
 )
+# save("./figures/fig5-errelation.png", plt_er_ss_binned; px_per_unit = 2)
+plt_er_ss_binned
 ```
 
 **Temporal Stability of Exposure-Response:**
@@ -816,7 +858,7 @@ Hysteresis plots reveal temporal delays between concentration and effect by plot
 ```{julia}
 #| out-width: 100%
 #| label: fig-er-hysteresis
-#| fig-cap: "Hysteresis plots showing PK-PD trajectories over time for individual subjects (subset shown). Each line traces one subject's time course through concentration-response space, colored by time. Hysteresis loops are evident, characteristic of the effect compartment delay and indirect response mechanisms. The combination of effect compartment (introducing time lag) and Kout inhibition creates pronounced hysteresis supporting the model structure."
+#| fig-cap: "Hysteresis plots showing PKPD trajectories over time for individual subjects (subset shown). Each line traces one subject's time course through concentration-response space, colored by time. Hysteresis loops are evident, characteristic of the effect compartment delay and indirect response mechanisms. The combination of effect compartment (introducing time lag) and Kout inhibition creates pronounced hysteresis supporting the model structure."
 # Prepare data for hysteresis plots
 df_hysteresis = @chain wide_data begin
     @rsubset begin
@@ -894,7 +936,7 @@ This analysis helps determine:
 
 - Whether males and females have different sensitivity (slope) to the drug
 - Whether baseline PD differs between sexes (intercept shift)
-- Whether covariate modeling will be necessary in subsequent PK-PD model development
+- Whether covariate modeling will be necessary in subsequent PKPD model development
 
 **Summary: Exploratory Data Analysis**
 
@@ -1150,14 +1192,14 @@ oral_model = @model begin
     end
 
     @param begin
-        θka ∈ RealDomain(lower=0.1, init=0.4)
-        θcl ∈ RealDomain(lower=0.1, init=7.3)
-        θvc ∈ RealDomain(lower=1.0, upper=500, init=93.0)
+        θka ∈ RealDomain(lower=0.1)
+        θcl ∈ RealDomain(lower=0.1)
+        θvc ∈ RealDomain(lower=1.0, upper=500)
 
         Ω_pk ∈ PDiagDomain(3)
 
-        σ_add_pk ∈ RealDomain(lower=0.0, init=1.0^2)
-        σ_prop_pk ∈ RealDomain(lower=0.0, init=0.09^2)
+        σ_add_pk ∈ RealDomain(lower=0.0)
+        σ_prop_pk ∈ RealDomain(lower=0.0)
     end
 
     @random begin
@@ -1243,7 +1285,8 @@ np_fit = fit(
     (; initial_est_oral_model..., Ω_pk=Diagonal([0.0, 0.0, 0.0])),
     NaivePooled();
     constantcoef=(:Ω_pk,),
-    optim_options=(; show_trace=false), verbose=false,
+    optim_options=(; show_trace=false),
+    verbose=false,
 )
 ```
 
@@ -1253,7 +1296,8 @@ foce_fit = fit(
     population,
     (; coef(np_fit)..., Ω_pk=initial_est_oral_model.Ω_pk),
     FOCE();
-    optim_options=(; show_trace=false), verbose=false,
+    optim_options=(; show_trace=false),
+    verbose=false,
 )
 ```
 
@@ -1269,6 +1313,7 @@ foce_inspect = inspect(foce_fit)
 ```
 
 The resulting `PumasInspect` object contains:
+
 - **PRED**: Population predictions (using population parameters only)
 - **IPRED**: Individual predictions (using individual parameters with EBEs)
 - **WRES/CWRES**: (Conditional) weighted residuals
@@ -1295,6 +1340,7 @@ goodness_of_fit(foce_inspect;
 ```
 
 This plot shows:
+
 - Observations vs. population predictions (OBS vs. PRED)
 - Observations vs. individual predictions (OBS vs. IPRED)
 - Conditional weighted residuals vs. predictions (CWRES vs. PRED)
@@ -1359,8 +1405,7 @@ This generates individual concentration-time plots overlaying observed data with
 VPC is a simulation-based diagnostic comparing observed data quantiles to model-predicted quantile intervals. Agreement indicates adequate model predictive performance.
 
 ```{julia}
-foce_vpc = vpc(foce_fit; 
-               covariates = [:tad],)
+foce_vpc = vpc(foce_fit; covariates = [:tad])
 ```
 
 The `covariates = [:tad]` argument bins observations by time after dose. The `vpc()` function simulates many replicates of the dataset and computes prediction intervals for the 5th, 50th, and 95th percentiles.
@@ -1408,16 +1453,16 @@ oral_model_2cmt = @model begin
     end
 
     @param begin
-        θka ∈ RealDomain(lower = 0.01, init = 1.0)
-        θcl ∈ RealDomain(lower = 0.01, init = 1.0)
-        θvc ∈ RealDomain(lower = 0.01, upper = 190.0, init = 10.0)
-        θq ∈ RealDomain(lower = 0.01, upper = 90.0, init = 10.0)
-        θvp ∈ RealDomain(lower = 0.01, upper = 190.0, init = 10.0)
+        θka ∈ RealDomain(lower = 0.01)
+        θcl ∈ RealDomain(lower = 0.01)
+        θvc ∈ RealDomain(lower = 0.01, upper = 190.0)
+        θq ∈ RealDomain(lower = 0.01, upper = 90.0)
+        θvp ∈ RealDomain(lower = 0.01, upper = 190.0)
 
         Ω_pk ∈ PDiagDomain(5)
 
-        σ_add_pk ∈ RealDomain(lower = 0.0, init = 1.0^2)
-        σ_prop_pk ∈ RealDomain(lower = 0.0, init = 0.09^2)
+        σ_add_pk ∈ RealDomain(lower = 0.0)
+        σ_prop_pk ∈ RealDomain(lower = 0.0)
     end
 
     @random begin
@@ -1425,7 +1470,7 @@ oral_model_2cmt = @model begin
     end
 
     @pre begin
-       ηka, ηcl , ηvc, ηq, ηvp = η
+       ηka, ηcl, ηvc, ηq, ηvp = η
         
         Ka = θka * exp(ηka)
         CL = θcl * exp(ηcl)
@@ -1470,7 +1515,8 @@ foce_fit_2cmt = fit(
     population,
     initial_est_oral_model_2cmt, 
     FOCE();
-    optim_options = (; show_trace = false), verbose=false,
+    optim_options = (; show_trace = false),
+    verbose=false,
 )
 ```
 
@@ -1487,7 +1533,7 @@ foce_inspect_2cmt = inspect(foce_fit_2cmt)
 #| out-width: 100%
 #| label: fig-gof-2cmt
 #| fig-cap: "Goodness-of-fit diagnostics for two-compartment model. Comparison with one-compartment diagnostics (@fig-gof-1cmt) should show reduced systematic deviations, particularly at early time points where distribution phase is prominent. Improved alignment of observations with predictions indicates superior model structure."
-goodness_of_fit(foce_inspect_2cmt; 
+fig3_std2cmpt_gof = goodness_of_fit(foce_inspect_2cmt; 
                 observations = [:CONC], 
                 markercolor = (:grey, 0.5), 
                 legend = (position = :bottom,
@@ -1497,6 +1543,8 @@ goodness_of_fit(foce_inspect_2cmt;
                         ),
                 figure = (size = (800, 800), fontsize = 18)
 )
+# save("./figures/fig3-std2cmpt-gof.png", fig3_std2cmpt_gof; px_per_unit = 2)
+fig3_std2cmpt_gof
 ```
 
 The diagnostics should show improved fit compared to the one-compartment model, particularly in the distribution phase.
@@ -1556,6 +1604,8 @@ plt_vpc_2cmt = vpc_plot(foce_vpc_2cmt,
         rightspinevisible=false,
         topspinevisible=false),
     figure=(size=(1800, 1400), fontsize=40))
+ 
+# save("./figures/fig4-std2cmpt-vpc.png", plt_vpc_2cmt; px_per_unit = 2)   
 plt_vpc_2cmt
 ```
 
@@ -1571,16 +1621,16 @@ oral_model_2cmt_noka = @model begin
     end
 
     @param begin
-        θka ∈ RealDomain(lower = 0.01, init = 1.0)
-        θcl ∈ RealDomain(lower = 0.01, init = 1.0)
-        θvc ∈ RealDomain(lower = 0.01, upper = 190.0, init = 10.0)
-        θq ∈ RealDomain(lower = 0.01, upper = 90.0, init = 10.0)
-        θvp ∈ RealDomain(lower = 0.01, upper = 190.0, init = 10.0)
+        θka ∈ RealDomain(lower = 0.01)
+        θcl ∈ RealDomain(lower = 0.01)
+        θvc ∈ RealDomain(lower = 0.01, upper = 190.0)
+        θq ∈ RealDomain(lower = 0.01, upper = 90.0)
+        θvp ∈ RealDomain(lower = 0.01, upper = 190.0)
 
         Ω_pk ∈ PDiagDomain(4)  # Now 4 instead of 5
 
-        σ_add_pk ∈ RealDomain(lower = 0.0, init = 1.0^2)
-        σ_prop_pk ∈ RealDomain(lower = 0.0, init = 0.09^2)
+        σ_add_pk ∈ RealDomain(lower = 0.0)
+        σ_prop_pk ∈ RealDomain(lower = 0.0)
     end
 
     @random begin
@@ -1588,7 +1638,7 @@ oral_model_2cmt_noka = @model begin
     end
 
     @pre begin
-        ηcl , ηvc, ηq, ηvp = η  # Only 4 random effects now
+        ηcl, ηvc, ηq, ηvp = η  # Only 4 random effects now
         Ka = θka  # No random effect
         CL = θcl * exp(ηcl)
         Vc = θvc * exp(ηvc)
@@ -1614,7 +1664,8 @@ foce_noka = fit(
     population,
     (coef(foce_fit_2cmt)..., Ω_pk = Diagonal([0.1, 0.1, 0.1, 0.1])),
     FOCE();
-    optim_options = (; show_trace = false), verbose=false,
+    optim_options = (; show_trace = false),
+    verbose=false,
 )
 ```
 
@@ -1742,19 +1793,19 @@ mdl_cov = @model begin
     end
 
     @param begin
-        θka ∈ RealDomain(lower = 0.01, init = 1.0)
-        θcl ∈ RealDomain(lower = 0.01, init = 1.0)
-        θvc ∈ RealDomain(lower = 0.01, upper = 190.0, init = 10.0)
-        θq ∈ RealDomain(lower = 0.01, upper = 90.0, init = 10.0)
-        θvp ∈ RealDomain(lower = 0.01, upper = 190.0, init = 10.0)
+        θka ∈ RealDomain(lower = 0.01)
+        θcl ∈ RealDomain(lower = 0.01)
+        θvc ∈ RealDomain(lower = 0.01, upper = 190.0)
+        θq ∈ RealDomain(lower = 0.01, upper = 90.0)
+        θvp ∈ RealDomain(lower = 0.01, upper = 190.0)
 
-        θsexCLF ∈ RealDomain(lower = -10.0, upper = 10.0, init = 1.0)
-        θvcWEIGHTB ∈ RealDomain(lower = 0.1, upper = 10.0, init = 1.0)
+        θsexCLF ∈ RealDomain(lower = -10.0, upper = 10.0)
+        θvcWEIGHTB ∈ RealDomain(lower = 0.1, upper = 10.0)
 
         Ω_pk ∈ PDiagDomain(4)
 
-        σ_add_pk ∈ RealDomain(lower = 0.0, init = 1.0^2)
-        σ_prop_pk ∈ RealDomain(lower = 0.0, init = 0.09^2)
+        σ_add_pk ∈ RealDomain(lower = 0.0)
+        σ_prop_pk ∈ RealDomain(lower = 0.0)
     end
 
     @covariates SEX WEIGHTB
@@ -1764,7 +1815,7 @@ mdl_cov = @model begin
     end
 
     @pre begin
-        ηcl , ηvc, ηq, ηvp = η
+        ηcl, ηvc, ηq, ηvp = η
         Ka = θka
 
         COVsexCL =
@@ -1835,6 +1886,7 @@ compare_estimates(;foce_noka, oral_model_covar_results)
 ```
 
 We expect to see:
+
 - Fixed effect estimates may change slightly (e.g., `θcl` adjusts as sex effect is introduced)
 - Random effect variances (Ω) should decrease if covariates successfully explain variability
 - Covariate parameters (`θsexCLF`, `θvcWEIGHTB`) with confidence intervals not including neutral values indicate significant effects
@@ -1872,7 +1924,7 @@ After including covariates, the EBE vs. covariate plots should show reduced tren
 Pumas supports automated covariate selection via `covariate_select()`. This function performs stepwise forward/backward selection. However, automatic covariate selection is computationally expensive and requires a stable base model. It should be used judiciously and results should be validated with clinical and physiological knowledge. Full details are in the documentation at docs.pumas.ai.
 :::
 
-## A.10 Parameter Uncertainty Quantification {#sec-uncertainty}
+## A.5 Parameter Uncertainty Quantification {#sec-uncertainty}
 
 Before finalizing our PK model, we quantify parameter uncertainty. This is essential for assessing statistical significance, evaluating model stability, and propagating uncertainty to simulations. This corresponds to **Stages 9-10** in the workflow map.
 
@@ -1891,14 +1943,14 @@ infer_table = coeftable(infer_covar)
 
 ---
 
-## A.11 Pharmacodynamic Modeling {#sec-pkpd}
+## A.6 Pharmacodynamic Modeling {#sec-pkpd}
 
-With a well-characterized PK model in hand, we now extend our analysis to pharmacodynamics (PD). Pharmacodynamic modeling links drug exposure (concentrations) to clinical or biological responses. In this section, we demonstrate **multi-endpoint modeling**, where both PK and PD observations are modeled simultaneously within a single framework. This approach corresponds to **Stage 11** in the workflow map, specifically multi-endpoint modeling and sequential PK-PD workflows.
+With a well-characterized PK model in hand, we now extend our analysis to pharmacodynamics (PD). Pharmacodynamic modeling links drug exposure (concentrations) to clinical or biological responses. In this section, we demonstrate **multi-endpoint modeling**, where both PK and PD observations are modeled simultaneously within a single framework. This approach corresponds to **Stage 11** in the workflow map, specifically multi-endpoint modeling and sequential PKPD workflows.
 
 We build an indirect response model where drug concentrations inhibit the degradation of a biomarker, with an effect compartment to capture hysteresis and a Hill coefficient for steep exposure-response. We demonstrate two approaches:
 
-1. **Simultaneous PK-PD modeling** (✓): Estimate all PK and PD parameters jointly
-2. **Sequential PK-PD modeling** (ⓐ): Fix PK parameters and estimate only PD parameters
+1. **Simultaneous PKPD modeling** (✓): Estimate all PK and PD parameters jointly
+2. **Sequential PKPD modeling** (ⓐ): Fix PK parameters and estimate only PD parameters
 
 We model **inhibition of kout** using an E<sub>max</sub> model with Hill coefficient and effect compartment:
 
@@ -1920,52 +1972,53 @@ Where:
 
 At baseline (Conc = Ce = 0), Response' = 0 and Response = kin/kout.
 
-### Simultaneous Multi-Endpoint PK-PD Modeling
+### Simultaneous Multi-Endpoint PKPD Modeling
 
 #### Model Definition
 
 We extend the PK model from the previous section to include PD dynamics. The model includes:
+
 - **PK component**: Two-compartment oral model with covariates (from Section XXX[3]XXX)
 - **PD component**: Indirect response with Kout inhibition, effect compartment (Ce), and Hill coefficient (γ)
 - **Multi-endpoint observations**: Both CONC (PK) and PD_CONC (PD) in `@derived`
 
-Note that we now use **explicit ODEs** in the `@dynamics` block rather than closed-form solutions. This is necessary because the PD dynamics (Response equation) must be coupled to the PK dynamics (Central compartment concentration).
+Note that we now use **explicit ODEs** in the `@dynamics` block rather than the name of a standard model. This is necessary because the PD dynamics (Response equation) must be coupled to the PK dynamics (Central compartment concentration).
 
 ```{julia}
 mdl_pkpd = @model begin
     @metadata begin
-        desc = "Simultaneous PK-PD model with indirect response (Kout inhibition, effect compartment, Hill coefficient)"
+        desc = "Simultaneous PKPD model with indirect response (Kout inhibition, effect compartment, Hill coefficient)"
         timeu = u"hr"
     end
 
     @param begin
         # PK parameters (from covariate model)
-        θka ∈ RealDomain(lower=0.01, init=1.0)
-        θcl ∈ RealDomain(lower=0.01, init=1.0)
-        θvc ∈ RealDomain(lower=0.01, upper=190.0, init=10.0)
-        θq ∈ RealDomain(lower=0.01, upper=90.0, init=10.0)
-        θvp ∈ RealDomain(lower=0.01, upper=190.0, init=10.0)
+        θka ∈ RealDomain(lower=0.01)
+        θcl ∈ RealDomain(lower=0.01)
+        θvc ∈ RealDomain(lower=0.01, upper=190.0)
+        θq ∈ RealDomain(lower=0.01, upper=90.0)
+        θvp ∈ RealDomain(lower=0.01, upper=190.0)
 
-        θsexCLF ∈ RealDomain(lower=-10.0, upper=10.0, init=1.0)
-        θvcWEIGHTB ∈ RealDomain(lower=0.01, upper=190.0, init=10.0)
+        θsexCLF ∈ RealDomain(lower=-10.0, upper=10.0)
+        θvcWEIGHTB ∈ RealDomain(lower=0.01, upper=190.0)
 
         Ω_pk ∈ PDiagDomain(4)
 
-        σ_add_pk ∈ RealDomain(lower=0.0, init=1.0^2)
-        σ_prop_pk ∈ RealDomain(lower=0.0, init=0.09^2)
+        σ_add_pk ∈ RealDomain(lower=0.0)
+        σ_prop_pk ∈ RealDomain(lower=0.0)
 
         # PD parameters - Kout inhibition with effect compartment and Hill coefficient
-        tvkin ∈ RealDomain(lower=0.001, upper=30, init=1.5)
-        tvkout ∈ RealDomain(lower=0.001, upper=100.0, init=0.03)
-        tvic50 ∈ RealDomain(lower=0.01, upper=100, init=15.0)
-        tvimax ∈ RealDomain(lower=0.0, upper=1.0, init=0.9)
-        tvke0 ∈ RealDomain(lower=0.001, upper=10.0, init=0.08)
-        tvgamma ∈ RealDomain(lower=0.1, upper=10.0, init=2.5)
+        tvkin ∈ RealDomain(lower=0.001, upper=30)
+        tvkout ∈ RealDomain(lower=0.001, upper=100.0)
+        tvic50 ∈ RealDomain(lower=0.01, upper=100)
+        tvimax ∈ RealDomain(lower=0.0, upper=1.0)
+        tvke0 ∈ RealDomain(lower=0.001, upper=10.0)
+        tvgamma ∈ RealDomain(lower=0.1, upper=10.0)
 
         Ωpd ∈ PDiagDomain(2)
 
-        σ_add_pd ∈ RealDomain(lower=0.0, init=0.5^2)
-        σ_prop_pd ∈ RealDomain(lower=0.0, init=0.05^2)
+        σ_add_pd ∈ RealDomain(lower=0.0)
+        σ_prop_pd ∈ RealDomain(lower=0.0)
     end
 
     @covariates SEX WEIGHTB
@@ -1978,10 +2031,13 @@ mdl_pkpd = @model begin
     @pre begin
         # PK parameters
         Ka = θka
-        COVsexCL =
-            SEX == "Female" ? 1 + θsexCLF :
-            (SEX == "Male" ? 1 :
-             error("Expected SEX to be either \"Female\" or \"Male\" but the value was: $SEX"))
+        COVsexCL = if SEX == "Female"
+            1 + θsexCLF
+        elseif SEX == "Male"
+            1
+        else
+            error("Expected SEX to be either \"Female\" or \"Male\" but the value was: $SEX")
+        end
 
         CL = θcl * COVsexCL * exp(η[1])
         Vc = θvc * (WEIGHTB / 77)^θvcWEIGHTB * exp(η[2])
@@ -2031,7 +2087,7 @@ end
 
 2. **`@vars` block**: Defines intermediate variables (here, `Conc`) that can be used in the `@dynamics` block. This improves code readability by avoiding repeated expressions.
 
-3. **Explicit ODEs**: The `@dynamics` block now contains differential equations rather than a closed-form solution name. The PD equation depends on `Conc`, which couples PK and PD dynamics.
+3. **Explicit ODEs**: The `@dynamics` block now contains explicit differential equations rather than the name of a standard model. The PD equation depends on `Conc`, which couples PK and PD dynamics.
 
 4. **Multiple observations in `@derived`**: Both `CONC` and `PD_CONC` are specified, each with its own error model. Pumas will match these to the corresponding observation columns in the data.
 
@@ -2076,7 +2132,7 @@ sim_plot(sim_pd; observations=[:PD_CONC],
 
 This plot shows simulated PD responses at initial parameter values. If the simulated profiles are wildly inconsistent with observed PD data, adjust initial values before fitting.
 
-#### Fitting the Simultaneous PK-PD Model
+#### Fitting the Simultaneous PKPD Model
 
 For the simultaneous approach, we estimate all parameters together. However, since we have high confidence in the PK parameter estimates from the previous section, we can **fix the PK parameters** and estimate only PD parameters. This is done using the `constantcoef` argument:
 
@@ -2098,12 +2154,14 @@ The `constantcoef` argument takes a collection of parameter names to hold fixed 
 ## Simultaneous vs. Sequential Estimation
 
 **Simultaneous estimation** (removing `constantcoef`) would re-estimate all PK and PD parameters jointly. This approach:
+
 - ✅ Accounts for correlations between PK and PD parameters
 - ✅ Provides joint uncertainty quantification
 - ❌ Is more computationally demanding
 - ❌ May be unstable if PK model is not well-identified
 
 **Sequential estimation** (using `constantcoef` to fix PK parameters) is appropriate when:
+
 - PK data are rich and PK parameters are well-estimated
 - PD data are sparse or limited
 - Computational efficiency is important
@@ -2137,7 +2195,7 @@ goodness_of_fit(pd_ins; observations=[:PD_CONC],
     figure=(size=(800, 800), fontsize=18))
 ```
 
-### Sequential PK-PD Modeling with Parameter Transfer
+### Sequential PKPD Modeling with Parameter Transfer
 
 An alternative to the approach above is **true sequential modeling**, where:
 
@@ -2189,17 +2247,17 @@ pk_seq_pd = @model begin
 
     @param begin
         # PD parameters - Kout inhibition with effect compartment and Hill coefficient
-        tvkin ∈ RealDomain(lower=0.001, upper=30, init=1.5)
-        tvkout ∈ RealDomain(lower=0.001, upper=100.0, init=0.03)
-        tvic50 ∈ RealDomain(lower=0.01, upper=100, init=15.0)
-        tvimax ∈ RealDomain(lower=0.0, upper=1.0, init=0.9)
-        tvke0 ∈ RealDomain(lower=0.001, upper=10.0, init=0.08)
-        tvgamma ∈ RealDomain(lower=0.1, upper=10.0, init=2.5)
+        tvkin ∈ RealDomain(lower=0.001, upper=30)
+        tvkout ∈ RealDomain(lower=0.001, upper=100.0)
+        tvic50 ∈ RealDomain(lower=0.01, upper=100)
+        tvimax ∈ RealDomain(lower=0.0, upper=1.0)
+        tvke0 ∈ RealDomain(lower=0.001, upper=10.0)
+        tvgamma ∈ RealDomain(lower=0.1, upper=10.0)
 
         Ωpd ∈ PDiagDomain(2)
 
-        σ_add_pd ∈ RealDomain(lower=0.0, init=0.5^2)
-        σ_prop_pd ∈ RealDomain(lower=0.0, init=0.05^2)
+        σ_add_pd ∈ RealDomain(lower=0.0)
+        σ_prop_pd ∈ RealDomain(lower=0.0)
     end
 
     @random begin
@@ -2261,7 +2319,7 @@ This model uses **inhibition of Kout** with an effect compartment and Hill coeff
 ```{julia}
 #| output: false
 ft_seq = fit(pk_seq_pd, pop_pd, init_θ_pkpd_seq, FOCE();
-    optim_options=(; show_trace=false), verbose=false,)
+    optim_options=(; show_trace=false), verbose=false)
 ```
 
 This fit estimates only PD parameters, treating individual PK parameters as known.
@@ -2270,21 +2328,23 @@ The estimates should generally be the same, but some numerical differences is to
 ```{julia}
 #| out-width: 100%
 #| label: tbl-sequential-comparison
-#| tbl-cap: "Comparison of PD parameter estimates between simultaneous (pd_ft) and sequential (ft_seq) modeling approaches. Estimates should be similar but not identical due to different uncertainty propagation. Sequential approach treats PK parameters as fixed, while simultaneous approach allows PK-PD parameter interactions during estimation."
+#| tbl-cap: "Comparison of PD parameter estimates between simultaneous (pd_ft) and sequential (ft_seq) modeling approaches. Estimates should be similar but not identical due to different uncertainty propagation. Sequential approach treats PK parameters as fixed, while simultaneous approach allows PKPD parameter interactions during estimation."
 compare_estimates(; pd_ft, ft_seq)
 ```
 
 #### Advantages and Disadvantages of Sequential Modeling
 
 **Advantages:**
+
 - ✅ Computationally efficient (smaller models, faster fits)
 - ✅ Allows separate teams to work on PK and PD
 - ✅ Useful when PK and PD data are from different sources
 - ✅ Simplifies model development (debug PK and PD separately)
 
 **Disadvantages:**
+
 - ❌ Does not propagate PK parameter uncertainty to PD estimates
-- ❌ Cannot estimate PK-PD parameter correlations
+- ❌ Cannot estimate PKPD parameter correlations
 - ❌ May underestimate overall uncertainty in simulations
 - ❌ Requires extra data manipulation to transfer parameters
 
@@ -2293,7 +2353,8 @@ For most analyses with rich PK and PD data from the same study, the simultaneous
 ::: {.callout-note}
 ## When to Use Sequential Modeling
 
-Consider sequential PK-PD when:
+Consider sequential PKPD when:
+
 - PK and PD data come from different studies or phases
 - PD sampling is very sparse relative to PK
 - You need to rapidly prototype PD models without re-fitting PK
@@ -2307,25 +2368,28 @@ For comprehensive final analyses, simultaneous estimation is generally recommend
 
 In this section, we extended our PK model to include pharmacodynamic endpoints, demonstrating multi-endpoint modeling approaches:
 
-**Simultaneous PK-PD Modeling (✓)**
+**Simultaneous PKPD Modeling (✓)**
+
 - Built an indirect response model with Kout inhibition, effect compartment, and Hill coefficient
 - Used explicit ODEs in `@dynamics` to couple PK and PD
 - Specified multiple observations in `@derived` (CONC and PD_CONC)
 - Fixed PK parameters using `constantcoef` to estimate only PD parameters
 - Applied standard diagnostic workflows to PD observations
 
-**Sequential PK-PD Modeling**
+**Sequential PKPD Modeling**
+
 - Outlined an alternative approach using individual PK parameters as covariates
 - Demonstrated complete separation of PK and PD estimation
 - Discussed trade-offs between simultaneous and sequential approaches
 
-With a validated PK-PD model, we're now ready to proceed to simulation for decision support in the next section, where we'll evaluate alternative dosing regimens and assess target attainment metrics to support dosing decisions.
+With a validated PKPD model, we're now ready to proceed to simulation for decision support in the next section, where we'll evaluate alternative dosing regimens and assess target attainment metrics to support dosing decisions.
 
 
 ::: {.callout-tip}
 ## Next Steps: Simulation for Decision Support
 
 In the next section, we will:
+
 1. Create alternative dosing regimens using `DosageRegimen()`
 2. Simulate concentration and response profiles with `simobs()`
 3. Calculate target attainment metrics from simulated data
@@ -2336,7 +2400,7 @@ This represents the culmination of the pharmacometric workflow—translating mod
 
 ---
 
-## A.12 Simulation for Decision Support {#sec-simulation}
+## A.7 Simulation for Decision Support {#sec-simulation}
 
 ### Clinical Question and Simulation Strategy
 
@@ -2364,7 +2428,7 @@ tr_low, tr_high = 75, 125
 N_per_DOSE = 10
 addl = 5
 ii = 24
-rng_simulation = StableRNG(15438)
+rng_simulation = Random.seed!(15438)
 function sample_subject(rng, i, dose)
     NOMTIME_DOSING = collect(0:ii:addl*ii)
     NOMTIME_TROUGH = NOMTIME_DOSING .- 0.1
@@ -2457,7 +2521,7 @@ cf_map = mapping(
 #| label: fig-dose-scenarios
 #| fig-cap: "Simulated steady-state PD biomarker profiles (Day 14, dose number 6) for six alternative dosing regimens (0 to 1600 mg). Each panel shows median (line) and 90% prediction interval (shaded band) across 100 simulated trials. Dashed horizontal lines indicate therapeutic range (80-150 units). Higher doses achieve greater biomarker response and longer time in therapeutic range, but may exceed upper target threshold."
 # combine layers and draw
-(data(_tbl) * (pi_layer + median_layer) * cf_map) + tr_layer |> draw(
+fig6_pta = (data(_tbl) * (pi_layer + median_layer) * cf_map) + tr_layer |> draw(
     scales(;
         Y=(; label="Biomarker level"),
         X=(; label="Time after previous dose, hours"),
@@ -2475,8 +2539,10 @@ cf_map = mapping(
         xlabelpadding=10,
         #        yticks = 0:20:80,
     ),
-    legend=(; orientation=:horizontal, framevisible=false, position=:bottom),
+    legend=(; orientation=:horizontal, framevisible=false, position=:bottom, nbanks=2, labelsize=10,),
 )
+# save("./figures/fig6-pta.png", fig6_pta, px_per_unit=2)
+fig6_pta
 ```
 
 ```{julia}
@@ -2563,6 +2629,7 @@ table_one(
 ## Interpreting Simulation Results for Dosing Decisions
 
 These simulation results support dose selection by:
+
 - Quantifying trade-offs between efficacy (target attainment) and safety (exceeding upper threshold)
 - Identifying optimal doses for achieving therapeutic targets in majority of patients
 - Providing evidence for regulatory submissions and protocol design
@@ -2570,3 +2637,66 @@ These simulation results support dose selection by:
 
 The final dose selection should integrate these model-based predictions with clinical judgment, safety data, and practical considerations (e.g., formulation constraints, dosing convenience).
 :::
+
+---
+
+## A.8 Installation and Setup {#sec-installation}
+
+Pumas is available through multiple deployment options to suit different organizational needs and computational requirements.
+
+### Pumas Desktop
+
+For individual users and small teams, Pumas Desktop provides a complete local installation with VS Code integration. This option is ideal for:
+
+- Individual pharmacometricians and researchers
+- Educational and training purposes
+- Development and prototyping workflows
+
+**Installation instructions**: [https://docs.pumas.ai/stable/platformdetails/desktop/](https://docs.pumas.ai/stable/platformdetails/desktop/){target="_blank"}
+
+### Pumas Cluster
+
+For teams requiring shared computational resources and collaborative workflows, Pumas Cluster provides a managed high-performance computing environment. This option supports:
+
+- Team-based collaboration with shared projects
+- High-performance computing for large-scale simulations
+- Centralized package and environment management
+
+**Setup and configuration**: [https://docs.pumas.ai/stable/platformdetails/pumascluster/](https://docs.pumas.ai/stable/platformdetails/pumascluster/){target="_blank"}
+
+### Enterprise Cloud Platform
+
+For organizations requiring enterprise-grade security, scalability, and support, PumasAI offers a fully managed cloud platform with:
+
+- Enterprise security and compliance (SOC 2, HIPAA-ready)
+- Dedicated support and training
+- Custom integrations and workflows
+- Scalable computational resources
+
+**For enterprise inquiries**: Contact [sales@pumas.ai](mailto:sales@pumas.ai)
+
+---
+
+## A.9 Additional Resources {#sec-resources}
+
+The Pumas ecosystem provides comprehensive resources for learning, troubleshooting, and staying current with platform developments.
+
+### Documentation
+
+- **Pumas Documentation**: [https://docs.pumas.ai](https://docs.pumas.ai){target="_blank"} — Complete API reference, function documentation, and technical guides
+- **Julia Documentation**: [https://docs.julialang.org](https://docs.julialang.org){target="_blank"} — Julia language reference and standard library documentation
+
+### Tutorials and Learning
+
+- **Pumas Tutorials**: [https://tutorials.pumas.ai](https://tutorials.pumas.ai){target="_blank"} — Step-by-step tutorials covering data preparation, modeling, diagnostics, and simulation
+- **AskPumas AI Assistant**: [https://ask.pumas.ai](https://ask.pumas.ai){target="_blank"} — AI-powered learning assistant for interactive help with Pumas concepts and code
+- **PumasAI YouTube Channel**: [https://www.youtube.com/@pumasai](https://www.youtube.com/@pumasai){target="_blank"} — Video tutorials, webinars, and conference presentations
+
+### Community and Support
+
+- **Pumas Discourse Forum**: [https://discourse.pumas.ai](https://discourse.pumas.ai){target="_blank"} — Community forum for questions, discussions, and sharing workflows
+- **Julia Discourse**: [https://discourse.julialang.org](https://discourse.julialang.org){target="_blank"} — General Julia programming community
+
+### Reproducible Research
+
+- **Quarto**: [https://quarto.org](https://quarto.org){target="_blank"} — Scientific publishing system used for this tutorial

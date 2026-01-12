@@ -1,0 +1,322 @@
+---
+title: "Data Simulation for Tutorial - Ground Truth Generation"
+engine: julia
+execute:
+  echo: true
+julia:
+    exeflags: ["+Pumas@2.7.1"]
+---
+
+```{julia}
+using Pumas
+using PumasUtilities
+using DataFramesMeta
+using CSV
+using SummaryTables
+using CairoMakie
+using AlgebraOfGraphics
+using StableRNGs
+```
+
+```{julia}
+#| output: false
+rng = StableRNG(5438)
+```
+
+## Data Simulation for Tutorial
+
+To demonstrate a complete pharmacometric workflow, we first simulate a synthetic dataset with known PK and PD properties. This allows us to validate our modeling approach against known ground truth parameters and provides a reproducible example for learning.
+
+### Define PKPD Model for Simulation
+
+We define a two-compartment PK model with indirect response PD (Kout inhibition with effect compartment and Hill coefficient for steep exposure-response and visible hysteresis), including covariate effects of sex on clearance and weight on volume of distribution.
+
+```{julia}
+mdl_pkpd = @model begin
+    @metadata begin
+        desc = "Simultaneous PKPD model with indirect response (Kout inhibition, effect compartment, Hill coefficient)"
+        timeu = u"hr"
+    end
+
+    @param begin
+        # PK parameters (from covariate model)
+        θka ∈ RealDomain(lower=0.01)
+        θcl ∈ RealDomain(lower=0.01)
+        θvc ∈ RealDomain(lower=0.01)
+        θq ∈ RealDomain(lower=0.01)
+        θvp ∈ RealDomain(lower=0.01)
+
+        θsexCLF ∈ RealDomain(lower=-10.0)
+        θvcWEIGHTB ∈ RealDomain(lower=0.01)
+
+        Ω_pk ∈ PDiagDomain(4)
+
+        σ_add_pk ∈ RealDomain(lower=0.0)
+        σ_prop_pk ∈ RealDomain(lower=0.0)
+
+        # PD parameters - Kout inhibition with effect compartment and Hill coefficient
+        tvkin ∈ RealDomain(lower=0.001, upper=30.0)
+        tvkout ∈ RealDomain(lower=0.001, upper=100.0)
+        tvic50 ∈ RealDomain(lower=0.1, upper=100.0)
+        tvimax ∈ RealDomain(lower=0.0, upper=1.0)
+        tvke0 ∈ RealDomain(lower=0.001, upper=10.0)
+        tvgamma ∈ RealDomain(lower=0.1, upper=10.0)
+
+        Ωpd ∈ PDiagDomain(2)
+
+        σ_add_pd ∈ RealDomain(lower=0.0)
+        σ_prop_pd ∈ RealDomain(lower=0.0)
+    end
+
+    @covariates SEX WEIGHTB DOSE
+
+    @random begin
+        η ~ MvNormal(Ω_pk)
+        ηpd ~ MvNormal(Ωpd)
+    end
+
+    @pre begin
+        # PK parameters
+        Ka = θka
+        COVsexCL = if SEX == "Female"
+            1 + θsexCLF
+        elseif SEX == "Male"
+            1
+        else
+            error(
+                "Expected SEX to be either \"Female\" or \"Male\" but the value was: $SEX",
+            )
+        end
+            )
+
+        CL = θcl * COVsexCL * exp(η[1])
+        Vc = θvc * (WEIGHTB / 77)^θvcWEIGHTB * exp(η[2])
+        Q = θq * exp(η[3])
+        Vp = θvp * exp(η[4])
+
+        # PD parameters - Kout inhibition with effect compartment
+        kin = tvkin
+        kout = tvkout
+        ic50 = tvic50 * exp(ηpd[1])
+        imax = tvimax
+        Ke0 = tvke0 * exp(ηpd[2])
+        gamma = tvgamma
+    end
+
+    @vars begin
+        Conc = Central / Vc
+        Ce_safe = max(Ce, 0.0)
+        INH = imax * Ce_safe^gamma / (ic50^gamma + Ce_safe^gamma)
+    end
+
+    @init begin
+        Response = kin / kout
+        Ce = 0.0
+    end
+    @dynamics begin
+        Depot' = -Ka * Depot
+        Central' = Ka * Depot - (CL + Q) / Vc * Central + Q / Vp * Peripheral
+        Peripheral' = Q / Vc * Central - Q / Vp * Peripheral
+        # Effect compartment introduces delay for hysteresis
+        Ce' = Ke0 * (Conc - Ce)
+        # Kout inhibition with Hill coefficient for steep exposure-response
+        Response' = kin - kout * (1 - INH) * Response
+    end
+
+    @derived begin
+        conc_model := @. abs.(Central / Vc)
+        CONC ~ @. Normal(conc_model, (DOSE > 0) * sqrt(σ_add_pk^2 + (conc_model * σ_prop_pk)^2))
+        PD_CONC ~ @. Normal(Response, sqrt(σ_add_pd^2 + (Response * σ_prop_pd)^2))
+    end
+end
+```
+
+### Define Initial Parameters
+
+We specify population parameter values that will be used to generate the synthetic dataset. These represent typical PK and PD characteristics for our simulated drug.
+
+```{julia}
+init_θ_pkpd = (
+    θka=1.8,
+    θcl=1.8,
+    θvc=30,
+    θq=12,
+    θvp=80,
+    θsexCLF=-0.5,
+    θvcWEIGHTB=0.5,
+    Ω_pk=[
+        0.03 0.0 0.0 0.0
+        0.0 0.2 0.0 0.0
+        0.0 0.0 0.02 0.0
+        0.0 0.0 0.0 0.1
+    ],
+    σ_add_pk=0.02,
+    σ_prop_pk=0.1,
+    # PD parameters - Kout inhibition with effect compartment and Hill coefficient
+    tvkin=1.5,          # Production rate (baseline = kin/kout = 50)
+    tvkout=0.03,        # Degradation rate constant
+    tvic50=12.0,        # IC50 for inhibition (mid-range of concentrations)
+    tvimax=0.9,         # Maximum inhibition (90%)
+    tvke0=0.08,         # Effect compartment rate constant (creates hysteresis)
+    tvgamma=1.5,        # Hill coefficient (moderate exposure-response steepness)
+    Ωpd=Diagonal([0.04, 0.04]),  # Variability on IC50 and Ke0
+    σ_add_pd=0.5,       # Additive error (scaled for higher response values)
+    σ_prop_pd=0.05,     # Proportional error
+)
+```
+
+### Generate Study Population
+
+We create a virtual population of subjects with realistic demographic characteristics and sampling schedules matching a typical multiple ascending dose study.
+
+```{julia}
+N_per_DOSE = 10
+addl = 5
+ii = 24
+NOMTIME_DOSING = collect(0:ii:addl*ii)
+NOMTIME_TROUGH = NOMTIME_DOSING .- 0.1
+NOMTIME_PD = vcat(NOMTIME_TROUGH, [120.1, 120.5, 121, 122, 124, 128, 132, 138, 143.9, 156, 167.9, 191.9, 215.9])
+NOMTIME_PK = sort(vcat([0.1, 0.5, 1.0, 2.0, 4.0, 8.0, 12.0, 18.0,], NOMTIME_PD))
+NOMTIME = sort(vcat(NOMTIME_DOSING, NOMTIME_PK))
+using StableRNGs
+rng = StableRNG(195438)
+function sample_subject(rng, i, dose)
+    _sexn = rand(rng, [1, 2])
+    _sex = ["Female", "Male"][_sexn]
+    _weight_dists = [Normal(75, 3), Normal(85, 4)]
+    _weightb = rand(rng, _weight_dists[_sexn])
+    N_NOMTIME = length(NOMTIME)
+    _int_dose = Int(round(dose))
+    Subject(
+        id="$(_int_dose)_$i",
+        time=NOMTIME_PK,
+        events=DosageRegimen(dose; addl=addl, ii=ii),
+        covariates=(SEX=fill(_sex, N_NOMTIME), WEIGHTB=fill(_weightb, N_NOMTIME), DOSE=fill(_int_dose, N_NOMTIME), TRTACT=fill(iszero(_int_dose) ? "Placebo" : string(_int_dose, "mg"), N_NOMTIME), NOMTIME=NOMTIME),
+        covariates_time=NOMTIME,
+    )
+end
+pop_sim = []
+for (i_dose, _dose) in enumerate([0, 100, 200, 400, 800, 1600])
+    d_int = Int(round(_dose))
+    for i_n = 1:N_per_DOSE
+        push!(
+            pop_sim,
+            sample_subject(rng, i_n, _dose),
+        )
+    end
+end
+pop_sim = identity.(pop_sim)
+pd_sim = simobs(
+    mdl_pkpd,
+    pop_sim,
+    init_θ_pkpd; rng)
+simdf = DataFrame(pd_sim)
+```
+
+### Visualize Simulated Data
+
+Before proceeding with the analysis workflow, we visualize the simulated PK and PD profiles to verify that our synthetic data exhibits realistic characteristics.
+
+#### PK Concentration Profiles
+
+```{julia}
+#| label: fig-sim-pk-profiles
+#| fig-cap: "Simulated plasma concentration-time profiles across all dose levels and subjects. Individual profiles shown in gray demonstrate between-subject variability in PK parameters including clearance, volume, and absorption rate."
+sim_plot(pd_sim;
+    observations=[:CONC],
+    color=:gray,
+    axis=(title="Simulated Concentration-Time Profiles",
+        xlabel="Nominal Time (hours)",
+        ylabel="Concentration (ng/mL)"),
+    legend=(; show=false),
+)
+```
+
+#### PD Response Profiles
+
+```{julia}
+#| label: fig-sim-pd-profiles
+#| fig-cap: "Simulated pharmacodynamic response profiles showing indirect response with inhibition of degradation rate (kout) and effect compartment delay for hysteresis. Gray lines represent individual subject trajectories demonstrating variability in IC50, Ke0, and baseline response levels."
+sim_plot(pd_sim;
+    observations=[:PD_CONC],
+    color=:gray,
+    axis=(title="Simulated PD Concentration-Time Profiles",
+        xlabel="Nominal Time (hours)",
+        ylabel="Response (units)"),
+    legend=(; show=false),
+)
+```
+
+### Data Processing for Analysis
+
+We process the simulated observations to create a realistic dataset structure that mimics real clinical trial data, including calculation of profile day and time since last dose.
+
+#### Compute Time Since Last Dose
+
+```{julia}
+function compute_proftime(df::DataFrame)
+    sort!(df, [:id, :NOMTIME])
+
+    df.PROFTIME = similar(df.NOMTIME)
+
+    for sub in groupby(df, :id)
+        lastdose = nothing
+        counter = 1
+        for row in eachrow(sub)
+            if row.evid == 1
+                lastdose = row.NOMTIME
+                row.PROFTIME = 0.0
+            else
+                row.PROFTIME = lastdose === nothing ? 0.0 : row.NOMTIME - lastdose
+            end
+        end
+    end
+
+    return df
+end
+```
+
+#### Filter and Transform Data
+
+We apply realistic sampling schedules (rich PK sampling on specific days, sparse PD sampling) and perform data transformations to prepare the analysis-ready dataset.
+
+```{julia}
+pkpd_df = DataFrame(pd_sim)
+
+compute_proftime(pkpd_df)
+@rtransform! pkpd_df :CONC = :time in NOMTIME_PK ? max(:CONC, 1e-6) : missing
+@rtransform! pkpd_df :PD_CONC = :time in NOMTIME_PD ? :PD_CONC : missing
+@rtransform! pkpd_df :PROFDAY = floor(:time / 24) + 1
+@transform! pkpd_df :ROUTE = "ev"
+```
+
+#### Finalize Dataset Structure
+
+We perform final data cleaning steps: remove simulation-specific columns, select analysis variables, round numeric values for realistic precision, and standardize column names.
+
+```{julia}
+# Set nominal time and remove internal simulation variables
+pkpd_df.NOMTIME .= pkpd_df.time
+@select! pkpd_df Not(:time, :Conc, :Ce, :INH, :rate, :ss, :duration, :ii, :route, :tad, :dosenum, :Depot, :Central, :Peripheral, :Response, :Ka, :COVsexCL, :CL, :Vc, :Q, :Vp, :kin, :kout, :ic50, :imax, :Ke0, :gamma, :η_1, :η_2, :η_3, :η_4, :ηpd_1, :ηpd_2)
+
+# Select final analysis columns
+select!(pkpd_df, [:id, :NOMTIME, :PROFTIME, :PROFDAY, :amt, :evid, :cmt, :ROUTE, :CONC, :PD_CONC, :SEX, :WEIGHTB, :DOSE, :TRTACT])
+
+# Round numeric values to realistic precision
+@rtransform! pkpd_df begin
+    :CONC = round(:CONC, digits=2)
+    :PD_CONC = round(:PD_CONC, digits=2)
+    :WEIGHTB = round(:WEIGHTB, digits=2)
+    :PROFTIME = round(:PROFTIME, digits=1)
+end
+
+# Standardize column names to uppercase (industry convention)
+rename!(uppercase, pkpd_df)
+```
+
+#### Export Dataset
+
+```{julia}
+# Needs to be {julia} not {julia} at publication :) Hello Reviewer if I forgot to flip the switch!
+CSV.write(joinpath(@__DIR__, "data/intro_paper_data.csv"), pkpd_df)
+```

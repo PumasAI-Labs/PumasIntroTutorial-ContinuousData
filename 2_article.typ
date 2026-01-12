@@ -27,62 +27,109 @@
 )
 #show raw: set text(font: "DejaVu Sans Mono")
 
+#show ref: it => {
+  let (element, target, supplement: supp) = it.fields()
+  // cite doesn't have element
+  if element == none {
+    return it
+  }
+
+  let non_cite_ref = element.fields()
+  let supp = if supp == auto { non_cite_ref.supplement } else { supp }
+  let num = context { // apply the heading's numbering style
+    let head-count = counter(heading).at(target)
+    numbering(non_cite_ref.numbering, ..head-count)
+  }
+  link(target, separate-supplement-style(supp, num))
+}
+
+// Show links with a box around them or filled with a color
+#show link: this => {
+  let show-type = "box" // "box" or "filled", see below
+  let label-color = green
+  let default-color = rgb("#ff66ff")
+  
+  if show-type == "box" {
+    if type(this.dest) == label {
+      // Make the box bound the entire text:
+      set text(bottom-edge: "bounds", top-edge: "bounds")
+      box(this, stroke: label-color + 1pt)
+    } else {
+      set text(bottom-edge: "bounds", top-edge: "bounds")
+      box(this, stroke: default-color + 1pt)
+    }
+  } else if show-type == "filled" {
+    if type(this.dest) == label {
+      text(this, fill: label-color)
+    } else {
+      text(this, fill: default-color)
+    }
+  } else {
+    this
+  }
+}
+
 #let authors = (
   (
-    names: ([Patrick Mogenson],),
+    names: ([Patrick Kofod Mogensen],),
     affilation: [
-      PumasAI Inc., USA
+      PumasAI, USA
     ],
     email: "patrick@pumas.ai",
   ),
   (
     names: ([Andreas Noack],),
     affilation: [
-      PumasAI Inc., USA
+      PumasAI, USA
     ],
   ),
   (
     names: ([Mohamed Tarek],),
     affilation: [
-      PumasAI Inc., USA
+      PumasAI, USA
+    ],
+  ),
+  (
+    names: ([Chris Elrod],),
+    affilation: [
+      Formerly with PumasAI, USA
     ],
   ),
   (
     names: ([David Müller-Widmann],),
     affilation: [
-      PumasAI Inc., USA
+      PumasAI, USA
     ],
   ),
   (
     names: ([Julius Krumbiegel],),
     affilation: [
-      PumasAI Inc., USA
+      PumasAI, USA
     ],
   ),
   (
     names: ([Michael Hatherly],),
     affilation: [
-      PumasAI Inc., USA
+      PumasAI, USA
     ],
   ),
   (
     names: ([Niklas Korsbo],),
     affilation: [
-      PumasAI Inc., USA
+      PumasAI, USA
     ],
   ),
   (
     names: ([Christopher Rackauckas],),
     affilation: [
-      PumasAI Inc., USA \
-      JuliaHub Inc., USA \
+      JuliaHub, USA \
       Massachusetts Institute of Technology, USA
     ],
   ),
   (
     names: ([Vijay Ivaturi],),
     affilation: [
-      PumasAI Inc., USA \
+      PumasAI, USA \
       Center for Pharmacometrics, MCOPS, Manipal Academy of Higher Education, India
     ],
     email: "vijay@pumas.ai",
@@ -105,15 +152,15 @@
   abstract: [
     // #word-count(total => [
     Pumas (Pharmaceutical Modeling and Simulation) is a software ecosystem for quantitative pharmaceutical analytics built on the Julia programming language.
-    This article introduces the Pumas ecosystem and demonstrates its integrated workflow through a complete case study of a multiple ascending dose trial with pharmacokinetic and pharmacodynamic endpoints.
+    This article introduces the Pumas ecosystem and demonstrates its integrated workflow through a complete case study of a multiple ascending dose trial with pharmacokinetic (PK) and pharmacodynamic (PD) endpoints.
 
-    The platform integrates nine capability domains: CDISC-compliant data preparation, exploratory data analysis with publication-quality visualization,
-    non-compartmental analysis with bioequivalence testing, nonlinear mixed effects modeling with multiple estimation algorithms (FOCE, Laplacian, SAEM, MCEM, Bayesian),
+    The platform integrates nine capability domains: Clinical Data Interchange Standards Consortium (CDISC)-compliant data preparation, exploratory data analysis with publication-quality visualization,
+    non-compartmental analysis (NCA) with bioequivalence testing, nonlinear mixed effects (NLME) modeling with multiple estimation algorithms (e.g., First Order Conditional Estimation (FOCE), Laplacian, Stochastic Approximation Expectation Maximization (SAEM), Monte Carlo Expectation Maximization (MCEM), Bayesian),
     simulation with differential equations using a variety of solvers, machine learning integration via DeepPumas, optimal experimental design,
     parallel computing infrastructure, and automated reporting through Quarto integration.
 
     We demonstrate the unified workflow from data preparation through model-based dose selection. Using a case study with 60 subjects across 6 dose levels,
-    we develop a two-compartment pharmacokinetic model with covariate effects (sex on clearance, weight on volume), extend to pharmacodynamics with indirect response modeling (Kout inhibition with effect compartment),
+    we develop a two-compartment pharmacokinetic model with covariate effects (sex on clearance, weight on volume), extend to pharmacodynamics with an indirect response model,
     and simulate alternative dosing regimens to evaluate target attainment metrics.
     The complete analysis executes within a single computational framework, eliminating tool-switching overhead and data conversion steps.
 
@@ -125,7 +172,6 @@
 
     //     Characters: #total.characters] <no-wc>
     // ], exclude: <no-wc>
-    )
   ],
   bibliography: bibliography("references.bib"),
   appendix: [
@@ -136,76 +182,54 @@
     = Complete Annotated Workflow and Implementation Details
 
     This appendix contains the complete code and detailed explanations for all analyses presented in the main text.
-    Each section corresponds to a stage in the pharmacometric workflow and provides reproducible examples with full parameter specifications.
+    Each section corresponds to a stage in the pharmacometric workflow and provides reproducible examples with full parameter specifications. The appendix 
+    is currently accessible via a #link("https://miniature-giggle-zrvq9og.pages.github.io/")[appendix website].
 
     == A.1 Data Simulation Code
 
     Complete code for generating the synthetic multiple ascending dose dataset used throughout the article.
-    Includes model definition, population generation, and data export. See lines 1-307 in `sections/10_report.qmd`.
+    Includes model definition, population generation, and data export. Available as supplementary material (`1_data_simulation.qmd`).
 
     == A.2 Data Preparation and Exploratory Analysis
 
-    Detailed data manipulation workflows using DataFramesMeta.jl, population object creation with `read_pumas()`,
+    Detailed data manipulation workflows, population object creation with `read_pumas()`,
     and comprehensive exploratory data analysis including summary tables and concentration-time profile visualization.
-    See lines 308-1061 in `sections/10_report.qmd`.
+    See `3_appendix.qmd`.
 
     == A.3 Non-Compartmental Analysis
 
     Complete NCA workflow including `NCAPopulation` creation, exposure metric calculation, dose proportionality assessment,
-    and statistical testing with power models. See lines 1062-1257 in `sections/10_report.qmd`.
+    and statistical testing with power models. See `3_appendix.qmd`.
 
-    == A.4 Complete Model Definitions
+    == A.4 Population Pharmacokinetic Model Development
 
-    Full code for all model specifications: one-compartment, two-compartment, covariate models, and multi-endpoint PK-PD models.
-    Includes detailed block-by-block explanations and parameter initialization strategies. See lines 1258-1903 in `sections/10_report.qmd`.
+    Complete PK modeling workflow including: model definitions (one-compartment, two-compartment, covariate models),
+    initial validation and prior predictive checks, progressive estimation strategies (NaivePooled → FOCE),
+    comprehensive diagnostics (goodness-of-fit, VPC, shrinkage, influence), model comparison procedures (AIC, BIC, likelihood ratio tests),
+    and covariate identification using EBE diagnostics. See `3_appendix.qmd`.
 
-    == A.5 Initial Validation and Prior Predictive Checks
-
-    Procedures for validating model specification using `loglikelihood()`, `findinfluential()`, and prior predictive simulation.
-    See lines 1320-1356 in `sections/10_report.qmd`.
-
-    == A.6 Model Fitting Workflows
-
-    Progressive estimation strategies (NaivePooled → FOCE), convergence diagnostics, and handling of estimation challenges.
-    See lines 1357-1593 in `sections/10_report.qmd`.
-
-    == A.7 Extended Diagnostics
-
-    Comprehensive diagnostic procedures including individual subject fits with pagination, empirical Bayes estimate shrinkage analysis,
-    and influence diagnostics. See lines 1384-1763 in `sections/10_report.qmd`.
-
-    == A.8 Model Comparison Procedures
-
-    Formal model comparison using `compare_estimates()`, `metrics_table()`, information criteria (AIC, BIC),
-    and likelihood ratio testing for nested models. See lines 1621-1763 in `sections/10_report.qmd`.
-
-    == A.9 Covariate Modeling Details
-
-    Complete covariate identification workflow using EBE diagnostics, implementation patterns for categorical and continuous covariates,
-    and evaluation of covariate model adequacy. See lines 1765-2003 in `sections/10_report.qmd`.
-
-    == A.10 Parameter Uncertainty Quantification
+    == A.5 Parameter Uncertainty Quantification
 
     Methods for uncertainty quantification using `infer()` with sandwich estimator, bootstrap procedures,
     sampling-importance-resampling (SIR), and interpretation of variance-covariance matrices.
-    See lines 1987-2003 in `sections/10_report.qmd`.
+    See `3_appendix.qmd` lines 1915-1933.
 
-    == A.11 PK-PD Modeling (Simultaneous and Sequential)
+    == A.6 PKPD Modeling (Simultaneous and Sequential)
 
-    Detailed multi-endpoint modeling approaches including simultaneous PK-PD estimation, sequential modeling with parameter transfer,
-    indirect response mechanisms, and exposure-response analysis. See lines 2004-2408 in `sections/10_report.qmd`.
+    Detailed multi-endpoint modeling approaches including simultaneous PKPD estimation, sequential modeling with parameter transfer,
+    indirect response mechanisms, and exposure-response analysis. See `3_appendix.qmd` lines 1934-2387.
 
-    == A.12 Simulation and Decision Support
+    == A.7 Simulation and Decision Support
 
     Extended simulation scenarios, virtual population generation, target attainment metric calculation,
-    sensitivity analyses, and interpretation guidelines for dose selection. See lines 2409-2640 in `sections/10_report.qmd`.
+    sensitivity analyses, and interpretation guidelines for dose selection. See `3_appendix.qmd`.
 
-    == A.13 Installation and Setup
+    == A.8 Installation and Setup
 
     Instructions for installing Julia, Pumas platform components, VS Code integration, and Quarto setup.
     Package version management with Project.toml and Manifest.toml for reproducible environments.
 
-    == A.14 Additional Resources
+    == A.9 Additional Resources
 
     Links to documentation (docs.pumas.ai), tutorials (tutorials.pumas.ai), community forums, GitHub repositories,
     and training materials. Includes guidance on accessing AskPumas AI assistant for interactive learning.
@@ -236,8 +260,8 @@
 
 Modern drug development requires quantitative decision-making across discovery, clinical development, and regulatory submission.
 A single pharmacometric analysis integrates data manipulation, exploratory visualization, statistical modeling, simulation, and regulatory reporting—tasks
-that historically required five or more software packages. Data preparation occurs in R or SAS, nonlinear mixed effects modeling in NONMEM @beal2013nonmem or Monolix @monolix2024,
-simulation in Python or MATLAB, non-compartmental analysis in specialized tools like WinNonlin, and final reporting in separate systems.
+that historically required five or more software packages. Data preparation occurs in R @R2024 or SAS @SAS2024, nonlinear mixed effects modeling in NONMEM @beal2013nonmem or Monolix @monolix2024,
+simulation in Python @Python2009 or MATLAB @MATLAB2024, non-compartmental analysis in specialized tools like WinNonlin @Phoenix2024, and final reporting in separate systems.
 
 This fragmentation introduces systematic inefficiencies. Data format conversions between tools create opportunities for errors.
 Context switching between programming languages and interfaces slows iterative model refinement. Reproducing analyses across tools requires
@@ -245,7 +269,7 @@ maintaining compatibility across multiple software versions and file formats. Ea
 
 == The Pumas Platform: Design Philosophy
 
-Pumas (Pharmaceutical Modeling and Simulation) integrates the complete pharmaceutical analytics lifecycle in a single computational framework built on
+Pumas (#strong[P]harmace#strong[u]tical #strong[M]odeling #strong[a]nd #strong[S]imulation) integrates the complete pharmaceutical analytics lifecycle in a single computational framework built on
 the Julia programming language @Julia-2017. The platform design rests on four core principles:
 
 *Single-Language Integration*: All components are native to Julia, eliminating language boundaries between workflow stages.
@@ -253,16 +277,16 @@ Data manipulation, statistical modeling, differential equation solving, and visu
 
 *Types and Multiple Dispatch*: Using Julia's type system to organize input and output into data structures to error at object construction if assumptions are violated and to use a coherent workflow by allowing functions to dispatch to the correct methods based on their types. Unlike legacy tools that may silently ignore errors or data inconsistencies until runtime failure, Pumas enforces constraints immediately.
 Population objects validate monotonic time, observation-model matching, and covariate completeness when created.
-Model definitions enforce parameter domain constraints before estimation begins. Multiple dispatch allows the user to use similar script templates, few functions and rely on multiple dispatch to use type information to calculate and return the relevant result for a variety of input.
+Model definitions enforce parameter domain constraints before estimation begins. Multiple dispatch allows the user to use similar script templates, few functions and rely on multiple dispatch to use type information to calculate and return the relevant result for a variety of inputs.
 
 *Composability*: Functions chain naturally—outputs from one stage become inputs to the next without manual conversion.
-The same ```julia Population``` object serves model fitting, and simulation.
-The same ```julia @model``` specification handles initial validation, parameter estimation, diagnostics, and scenario evaluation.
+The same ```julia Population``` object serves model fitting and simulation.
+The same model specification handles initial validation, parameter estimation, diagnostics, and scenario evaluation.
 
 *Performance*: Julia's just-in-time compilation resolves the "two-language problem" @Julia-2017, allowing models to be defined and executed in the same high-level language without transpilation to C++ or Fortran.
 This architecture enables aggressive optimization while maintaining code readability. Automatic differentiation enables efficient gradient-based optimization. Parallel computing infrastructure scales across CPU cores without explicit user configuration.
 
-These principles enable reproducible workflows through version-controlled scripts, Quarto notebook integration, and automated reporting.
+These principles enable reproducible workflows through version-controlled scripts, notebook integration, and automated reporting.
 The entire analysis from raw data to regulatory submission documents can be rendered into a single reproducible report.
 
 == Ecosystem Capabilities: Complete Pharmaceutical Analytics
@@ -274,8 +298,8 @@ This architecture enables specialized pharmacometric functionality while leverag
 
 *Pumas Platform Components* (proprietary, requiring license):
 - *Pumas*: Core pharmacometric modeling engine including ```julia @model``` macro, NLME estimation algorithms (FOCE, Laplace, SAEM, MCEM, Bayesian), population objects, and diagnostics
-- *PumasUtilities*: Pharmacometric plotting functions (```julia goodness_of_fit()```, ```julia vpc_plot()```, ```julia subject_fits()```, ```julia empirical_bayes_vs_covariates()```)
-- *DeepPumas*: Neural network integration for scientific machine learning and DeepNLME
+- *PumasUtilities*: Pharmacometric plotting functions (e.g. ```julia goodness_of_fit()```, ```julia vpc_plot()```, ```julia subject_fits()```, ```julia empirical_bayes_vs_covariates()```)
+- *DeepPumas*: Machine-learning extensions to the ecosystem that enables scientific machine learning and DeepNLME.
 - *PharmaDatasets.jl*: Curated pharmaceutical datasets for learning and method validation
 
 *Open-Source Julia Packages* (developed and maintained by PumasAI, available on GitHub):
@@ -291,9 +315,8 @@ This architecture enables specialized pharmacometric functionality while leverag
 - *DataFramesMeta.jl* @DataFramesMeta: Macro-based data manipulation (similar to dplyr @wickham2023dplyr in R)
 - *CSV.jl* @CSV: CSV file reading and writing
 - *CairoMakie.jl* / *Makie.jl* @danisch2021makie: Publication-quality graphics rendering
-- *DifferentialEquations.jl* @rackauckas2017differentialequations: Differential equation solvers (ODE, SDE, DAE)
+- *DifferentialEquations.jl* @rackauckas2017differentialequations: Differential equation solvers (ordinary differential equations (ODE), stochastic differential equations (SDE), differential-algebraic equations (DAE))
 - *AdvancedHMC.jl* @AdvancedHMC: Hamiltonian Monte Carlo for Bayesian inference
-- *StableRNGs.jl* @StableRNGs: Reproducible random number generation
 
 *External Tools*:
 - *Quarto* @allaire2023quarto: Scientific publishing system for reproducible documents (not a Julia package; separate installation)
@@ -305,10 +328,10 @@ The Pumas ecosystem encompasses nine integrated capability domains that span the
 
 === Data Preparation and Standards
 
-*CDISC-Compliant Workflows*: Data preparation through ADaM.jl creates analysis datasets following Clinical Data Interchange Standards Consortium (CDISC) specifications @cdisc2023
+*CDISC-Compliant Workflows*: Data preparation through Analysis Data Model (ADaM).jl creates analysis datasets following CDISC specifications @cdisc2023
 for both non-compartmental analysis and population pharmacokinetic/pharmacodynamic modeling. CDISC compliance ensures regulatory acceptability and cross-study consistency.
 
-*Data Format Support and Data Representation*:  All the usual file formats such as .csv, .xlsx and  .sas7bdat are supported through packages `CSV.jl` and `ReadStatTables.jl` and are converted into `DataFrame`s.  The ```julia read_pumas() ``` function converts the `DataFrame`s into validated ```julia Population``` objects.
+*Data Format Support and Data Representation*: All the usual file formats such as .csv, .xlsx and .sas7bdat are supported through packages `CSV.jl` and `ReadStatTables.jl` and are converted into `DataFrame`s.  The ```julia read_pumas()``` function converts the `DataFrame`s into validated ```julia Population``` objects.
 Validation checks include monotonic time within subjects, observation-model matching, and covariate completeness.
 Errors are caught at data construction with informative messages indicating specific subjects and time points requiring correction.
 
@@ -316,16 +339,16 @@ Errors are caught at data construction with informative messages indicating spec
 Most Pumas objects convert to DataFrames for custom analyses or export to external tools.
 
 *Example Datasets*: PharmaDatasets.jl provides standard pharmaceutical datasets for learning and method validation,
-including published PK/PD studies with documentation of data structure and details of data source.
+including published PKPD studies with documentation of data structure and details of data source.
 
 === Exploratory Data Analysis
 
-*Statistical Foundations*: Built on Statistics.jl (descriptive statistics, hypothesis tests) and GLM.jl (generalized linear models for exploratory regression).
-Standard statistical tests (t-tests, ANOVA, correlation) available for covariate analysis and data quality assessment.
+*Statistical Foundations*: Built on Statistics.jl (descriptive statistics), HypothesisTests.jl (hypothesis tests) and GLM.jl (generalized linear models for exploratory regression).
+Standard statistical tests in StatsBase.jl (t-tests, ANOVA, correlation) available for covariate analysis and data quality assessment.
 
 *Visualization*: Integrated plotting through AlgebraOfGraphics.jl (an algebra of graphics approach) and CairoMakie.jl  (publication-quality rendering).
-Algebra-of-graphics enables declarative plot specification: map data to aesthetics, apply geometric representations, facet by variables, similar to ggplot2 in R.
-Plots are Julia objects that can be composed, modified, and exported to vector formats.
+AlgebraOfGraphics.jl enables declarative plot specification, similar to ggplot2 in R: mapping data to aesthetics, applying geometric representations, and facetting by variables.
+Plots are Julia objects that can be composed, modified, and exported to vector formats in addition to standard image formats such as png and jpg.
 
 *Summary Tables*: SummaryTables.jl generates publication-quality demographic tables, data quality summaries, and listing tables matching regulatory submission standards.
 Tables support stratification by categorical variables, custom summary functions, and formatting specifications for decimal places and missing data handling.
@@ -335,43 +358,43 @@ and identification of missing data patterns or outliers requiring investigation.
 
 === Noncompartmental Analysis
 
-*Core NCA*: The ```julia run_nca()``` function calculates standard exposure metrics including area under the curve (AUC), maximum concentration (Cmax),
+*Core NCA*: The NCA module calculates standard exposure metrics including area under the curve (AUC), maximum concentration (Cmax),
 time of maximum concentration (Tmax), terminal elimination half-life (t½), apparent clearance (CL/F), and apparent volume of distribution (Vz/F).
-Calculation methods follow FDA @fda2014bioequivalence and EMA @ema2010bioequivalence guidances.
+Calculation methods follow Food and Drug Administration (FDA) @fda2014bioequivalence and European Medicines Agency (EMA) @ema2010bioequivalence guidances.
 
 *Data Handling*: Integrated support for missing observations and below-limit-of-quantification (BLQ) data.
-BLQ handling options include: treat as zero, treat as missing, or impute using LLOQ/2. Missing data handling follows established pharmacokinetic principles
+BLQ handling options include: treat as zero, treat as missing, or impute using lower limit of quantification (LLOQ)/2. Missing data handling follows established pharmacokinetic principles
 (e.g., no extrapolation beyond last quantifiable concentration for AUClast).
 
-*Superposition*: Predict multiple-dose steady-state profiles from single-dose pharmacokinetics using linear superposition principles
+*Superposition*: Prediction of multiple-dose steady-state profiles from single-dose pharmacokinetics using linear superposition principles.
 
 *Automation*: NCA report generation with configurable parameter sets. Users specify which parameters to calculate (e.g., exclude Vz/F if terminal phase poorly characterized).
 Reports include parameter estimates, confidence intervals, and dose normalization for proportionality assessment.
 
 === Dose Proportionality
 
-Statistical evaluation of dose linearity using power models. The ```julia NCA.DoseLinearityPowerModel()``` function fits the regression model $log(Y) = alpha + beta dot log("Dose")$ where Y is an NCA parameter (AUC, Cmax) and tests whether the slope β differs significantly from 1.0 (perfect proportionality). The function accepts an ```julia NCAReport``` and parameter name (e.g., ```:auc_0_inf```, ```:cmax```), returning a ```julia DoseLinearityPowerModel``` object containing point estimate and confidence interval for β.
+Statistical evaluation of dose linearity using power models. The ```julia NCA.DoseLinearityPowerModel()``` function fits the regression model $log(Y) = alpha + beta dot log("Dose")$ where $Y$ is an NCA parameter (AUC, Cmax) and tests whether the slope $beta$ differs significantly from 1 (perfect proportionality). The function accepts an ```julia NCAReport``` and parameter name (e.g., ```:auc_0_inf```, ```:cmax```), returning a ```julia DoseLinearityPowerModel``` object containing point estimate and confidence interval for $beta$.
 
 === Bioequivalence Analysis
 
-Statistical assessment of bioequivalence through comprehensive testing procedures that meet regulatory submission requirements. The platform supports parametric methods including the two one-sided tests (TOST) procedure as well as non-parametric alternatives for non-normal distributions. Study designs handled include standard 2×2 crossover designs alongside more complex arrangements: higher-order crossover, parallel group, and replicate designs. For highly variable drugs, reference-scaled average bioequivalence (RSABE) calculations adjust equivalence bounds based on within-subject variability of the reference product. The workflow generates geometric mean ratios with 90% confidence intervals, automatically applying log-transformation to pharmacokinetic metrics like AUC and Cmax while accommodating untransformed analyses when appropriate. Equivalence bounds typically follow regulatory guidance of 80-125%, though the platform allows customization for specific cases. Integration with the NCA workflow creates a seamless path from exposure metric calculation via ```julia run_nca()``` to bioequivalence testing through ```julia pumas_be()```, with automatic handling of period effects, sequence effects, and subject-level random effects. Built-in templates encode common study designs and regulatory expectations from both FDA and EMA guidelines, reducing setup time and ensuring compliance with jurisdictional requirements.
+Statistical assessment of bioequivalence through comprehensive testing procedures that meet regulatory submission requirements @fda2014bioequivalence. The platform supports parametric methods including the two one-sided tests (TOST) procedure as well as non-parametric alternatives for non-normal distributions. Study designs handled include standard 2×2 crossover designs alongside more complex arrangements: higher-order crossover, parallel group, and replicate designs. For highly variable drugs, reference-scaled average bioequivalence (RSABE) calculations adjust equivalence bounds based on within-subject variability of the reference product. The workflow generates geometric mean ratios with 90% confidence intervals, automatically applying log-transformation to pharmacokinetic metrics like AUC and Cmax while accommodating untransformed analyses when appropriate. Equivalence bounds typically follow regulatory guidance of 80-125%, though the platform allows customization for specific cases. Integration with the NCA workflow creates a seamless path from exposure metric calculation via ```julia run_nca()``` to bioequivalence testing through ```julia pumas_be()```, with automatic handling of period effects, sequence effects, and subject-level random effects. Built-in templates encode common study designs and regulatory expectations from both FDA and EMA guidelines, reducing setup time and ensuring compliance with jurisdictional requirements.
 
 === Sample Size and Power
 
-Prospective power calculation for bioequivalence studies using ```julia samplesize()``` enables sample size determination before trial execution. Given expected within-subject variability (coefficient of variation), anticipated geometric mean ratio, equivalence bounds (typically 80-125%), and desired power level (conventionally 80% or 90%), the function calculates required sample size per sequence. The calculation accounts for study design (2×2 crossover, parallel, replicate), significance level (α, typically 0.05 for 90% confidence intervals), and dropout rates. Higher within-subject variability demands larger sample sizes to achieve adequate power—a CV of 30% requires substantially more subjects than 15% to detect bioequivalence with the same power. For highly variable drugs (CV > 30%), reference-scaled average bioequivalence may reduce sample size requirements by widening acceptance criteria based on reference product variability. Sensitivity analyses across plausible CV ranges inform realistic sample size planning and budget allocation for Phase 1 bioequivalence trials.
+Prospective power calculation for bioequivalence studies using ```julia samplesize()``` enables sample size determination before trial execution. Given expected within-subject variability (coefficient of variation (CV)), anticipated geometric mean ratio, equivalence bounds (typically 80-125%), and desired power level (conventionally 80% or 90%), the function calculates required sample size per sequence. The calculation accounts for study design (2×2 crossover, parallel, replicate), significance level (α, typically 0.05 for 90% confidence intervals), and dropout rates. Higher within-subject variability demands larger sample sizes to achieve adequate power—a CV of 30% requires substantially more subjects than 15% to detect bioequivalence with the same power. For highly variable drugs (CV > 30%), reference-scaled average bioequivalence may reduce sample size requirements by widening acceptance criteria based on reference product variability. Sensitivity analyses across plausible CV ranges inform realistic sample size planning and budget allocation for Phase 1 bioequivalence trials.
 
 === Nonlinear Mixed Effects (NLME) Modeling
 
 *Model Definition*: Declarative specification using the ```julia @model``` macro with dedicated functional blocks:
-- ```julia @param```: Population parameters with domain constraints (bounds, positivity, initial values) and distributional priors
+- ```julia @param```: Population parameters with domain constraints (bounds such as positivity) and prior distributions
 - ```julia @random```: Multivariate distributions for inter-subject variability and inter-occasion variability
-- ```julia @covariates```: Explicit declaration of subject-level covariates used in parameter derivations
-- ```julia @pre```: Individual parameter calculations incorporating covariates and random effects
-- ```julia @dynamics```: Differential equations or closed-form solutions for system dynamics
+- ```julia @covariates```: Explicit declaration of subject-level covariates
+- ```julia @pre```: Individual parameter calculations incorporating population parameters, random effects, and covariates
+- ```julia @dynamics```: System dynamics (differential equations)
 - ```julia @derived```: Observation models with error structures
 - ```julia @vars```: Intermediate variables for code clarity (optional)
 
-This block structure enforces logical organization and makes model assumptions explicit. There are several other blocks not covered here, please refer to the Pumas documentation @pumas2024docs for a complete list
+This block structure enforces logical organization and makes model assumptions explicit. There are several other blocks not covered here, please refer to the Pumas documentation @pumas2024docs for a complete list.
 
 *Data Type Support*: Continuous data (plasma concentrations, biomarkers), count data (seizure frequency, tumor lesion counts),
 categorical data (response classifications), time-to-event data (survival analysis), and combinations enabling multi-endpoint modeling
@@ -380,56 +403,56 @@ categorical data (response classifications), time-to-event data (survival analys
 *Estimation Algorithms*:
 - *Classical*: Naive Pooled (fixed effects only), First Order (FO), First Order Conditional Estimation @lindstrom1990nonlinear (FOCE with or without interaction), Laplacian approximation
 - *Maximum A Posteriori*: MAP (individual parameter estimation) and JointMAP (simultaneous population and individual estimation)
-- *Expectation-Maximization*: SAEM @kuhn2005maximum (Stochastic Approximation EM, handles complex random effect structures), MCEM (Monte Carlo EM)
+- *Expectation-Maximization*: SAEM @kuhn2005maximum (Stochastic Approximation EM, handles complex random effect structures), MCEM @Wei1990 (Monte Carlo EM)
 - *Bayesian*: Full posterior inference via Hamiltonian Monte Carlo @hoffman2014nuts through AdvancedHMC.jl integration, enabling credible intervals and posterior predictive checks
 
-Algorithm selection depends on model complexity, data richness, and inference goals. SAEM handles models intractable with FOCE and Bayesian methods enable prior incorporation and posterior predictive validation.
+Algorithm selection depends on model complexity, data richness, and inference goals.
 
 *Model Diagnostics*: Comprehensive suite including goodness-of-fit plots (observations vs predictions, residuals vs predictions/time),
-visual predictive checks @holford2005vpc @bergstrand2011vpc (VPC with stratification), individual subject fits with empirical Bayes estimates,
+Visual Predictive Checks (VPC) @holford2005vpc @bergstrand2011vpc (with stratification), individual subject fits with Empirical Bayes Estimates (EBE),
 influence diagnostics (identifying subjects with large impact on parameter estimates), and EBE shrinkage analysis @savic2009shrinkage (assessing information content for random effects) and many others.
 
-*Parameter Inference*: Uncertainty quantification via ```julia infer()``` function with three methods:
+*Parameter Inference*: Uncertainty quantification via ```julia infer()``` with three methods:
 - *Sandwich estimator* @white1980sandwich: Fast asymptotic standard errors from observed Fisher information (default) or the inverse Hessian.
-- *Bootstrap* @efron1994bootstrap: Non-parametric uncertainty via resampling subjects with replacement, with or without stratification
-- *Sampling-Importance-Resampling (SIR)*: Samples from asymptotic distribution weighted by likelihood ratios, providing non-asymptotic confidence intervals
-- *MarginalMCMC*: Infer the uncertainty of the parameters of the fitted model fpm by sampling from the marginal likelihood with the MCMC algorithm
+- *Bootstrap* @efron1994bootstrap: Non-parametric uncertainty via resampling subjects with replacement, with or without stratification.
+- *Sampling-Importance-Resampling (SIR)*: Resampling of samples from asymptotic distribution weighted by likelihood ratios, providing non-asymptotic confidence intervals.
+- *MarginalMCMC*: Infer the uncertainty of the parameters of the fitted model fpm by sampling from the marginal posterior of the population parameters with the MCMC algorithm
 
 *Automation*: Automated covariate selection using stepwise forward/backward procedures using the ```julia covariate_select()``` function. Starting from a base model, the algorithm tests covariate effects sequentially,
-retaining covariates that improve model fit beyond a specified threshold (e.g., ΔOFV > 3.84 for forward selection, > 10.83 for backward elimination).
+retaining covariates that improve model fit beyond a specified threshold (e.g., ΔObjective Function Value (ΔOFV) > 3.84 for forward selection, > 10.83 for backward elimination).
 Automation reduces manual model-building time but requires validation of selected covariates against physiological plausibility.
 
-*Optimization*: Automatic detection of closed-form solutions for standard linear compartmental models (e.g., one-compartment, two-compartment, three-compartment with various absorption patterns).
-When closed-form solutions exist, Pumas uses analytical expressions via the matrix exponentials rather than numerical ODE solving, reducing computation time by orders of magnitude.
+*Automatic Performance Optimization for Linear Differential Equations*: Automatic detection of linear differential equation models (e.g., one-compartment, two-compartment, three-compartment with various absorption patterns).
+For such models, Pumas uses analytical expressions via the matrix exponentials rather than numerical ODE solving, reducing computation time by orders of magnitude.
 
 === Simulation and Advanced Modeling
 
-*Differential Equation Integration*: Deep integration with DifferentialEquations.jl @rackauckas2017differentialequations provides access to over 100 ODE, DAE (differential-algebraic),
-and SDE (stochastic differential equation) solvers. Features include adaptive timestepping (automatically adjusts step size for accuracy and stability),
-automatic stiffness detection (switches between non-stiff and stiff solvers as needed), and event handling (implements dosing, reset conditions, or discontinuities).
+*Differential Equation Integration*: Deep integration with DifferentialEquations.jl @rackauckas2017differentialequations provides access to over 100 ODE solvers.
+Features include adaptive timestepping (automatically adjusts step size for accuracy and stability),
+automatic stiffness detection (switches between non-stiff and stiff solvers as needed), and event handling (for dosing, reset conditions, and discontinuous covariate changes).
 
 *Clinical Trial Simulation*: Generate virtual populations with specified covariate distributions, simulate dosing regimens using ```julia DosageRegimen()```
 (supports complex schedules: loading doses, multiple compartments, time-varying infusions), and evaluate trial outcomes under protocol variations.
 Applications include dose selection, sample size determination, and protocol optimization.
 
 *Sensitivity Analysis*: Global sensitivity analysis identifies parameters with largest impact on model outputs across parameter space using methods like
-Sobol indices @sobol2001sensitivity, Morris screening @morris1991factorial, and eFast methods @saltelli1999efast. Local sensitivity analysis computes gradients at specific parameter values to understand output changes with small parameter perturbations.
+Sobol indices @sobol2001sensitivity, Morris screening @morris1991factorial, and eFast methods @saltelli1999efast. Local sensitivity analysis computes gradients at specific parameter values to understand output changes with infinitesimal parameter perturbations.
 
-*Optimal Experimental Design* @atkinson2007optimal @mentre1997optimal @nyberg2012methods: Tools for designing efficient PK/PD studies by optimizing sampling times, dose levels, or subject allocation.
-Criteria include D-optimal (maximize determinant of Fisher information matrix), ED-optimal (maximize determinant of expected Fisher information),
-and A-optimal (minimize trace of covariance matrix). Applications include Phase 1 dose escalation design and Phase 2 dose selection.
+*Optimal Experimental Design* @atkinson2007optimal @mentre1997optimal @nyberg2012methods: Tools for designing efficient PKPD studies by optimizing sampling times.
+Criteria include D-optimal (maximize determinant of Fisher information matrix), T-optimal (maximize the trace of the Fisher information matrix),
+and A-optimal (minimize the trace of the inverse Fisher information matrix). Applications include designing Phase 2 trials.
 
 *Parallel Simulation*: Automatic parallelization across subjects and simulation replicates using Julia's multithreading and distributed computing.
 
 === Scientific Machine Learning and DeepNLME
 
-*DeepPumas*: Integrates neural networks with mechanistic pharmacokinetic/pharmacodynamic models in a NLME framework with random effects (DeepNLME) included. Applications include:
+*DeepPumas*: Integrates neural networks with mechanistic pharmacokinetic/pharmacodynamic models in a NLME framework with random effects included, aka DeepNLME. Applications include:
 - Replace unknown mechanistic components with neural networks (universal differential equations @rackauckas2020universal)
-- Transfer learning: train models on preclinical data, fine-tune on clinical data
+- Automatic covariate modelling using high-dimensional and complex covariates.
 
-DeepPumas combines automatic differentiation through neural networks and differential equations @raissi2019pinn, enabling end-to-end training with gradient-based optimization.
+DeepPumas combines automatic differentiation through neural networks, differential equations @raissi2019pinn, and the marginal likelihood calculation, enabling end-to-end training with gradient-based optimization.
 
-=== Agentic AI Workflows
+=== Agentic Artificial Intelligence (AI) Workflows
 
 *PumasAide*: Agentic AI assistant for automated modeling workflows. Capabilities include suggesting model structures based on data characteristics,
 automatically generating diagnostic plots with interpretations, and proposing covariate model refinements based on EBE analysis.
@@ -438,30 +461,30 @@ PumasAide accelerates modeling for experienced users and provides guidance for l
 === Visualization and Reporting
 
 *Pharmacometric Plots*: Built-in functions for standard diagnostic visualizations:
-- Goodness-of-fit: ```julia goodness_of_fit()``` generates four-panel plot (observations vs population predictions, observations vs individual predictions, conditional weighted residuals vs population predictions, conditional weighted residuals vs time)
+- Goodness-of-Fit (GOF): ```julia goodness_of_fit()``` generates four-panel plot (observations vs population predictions, observations vs individual predictions, conditional weighted residuals vs population predictions, conditional weighted residuals vs time)
 - Visual predictive checks: ```julia vpc()``` simulates replicates, ```julia vpc_plot()``` overlays observed and predicted quantiles with confidence intervals
 - Individual fits: ```julia subject_fits()``` displays observed data with individual predictions, supports pagination for large datasets
 - EBE diagnostics: ```julia empirical_bayes_vs_covariates()``` plots random effects against covariates to identify covariate relationships
 
 *Custom Visualization*: Full access to AlgebraOfGraphics.jl and Makie.jl for publication-quality custom graphics.
-Algebra-of-graphics approach enables layered plot construction: specify data mappings, add geometric elements, apply statistical transformations, customize aesthetics.
+This enables layered plot construction: specify data mappings, add geometric elements, apply statistical transformations, customize aesthetics.
 Output formats include PNG, PDF, SVG for publications.
 
-*Automated Reporting*: Quarto @allaire2023quarto integration combines code, results, and narrative in single reproducible documents.
+*Customized Reporting*: Quarto @allaire2023quarto integration combines code, results, and narrative in single reproducible documents.
 Quarto notebooks execute Julia code blocks, capture outputs (tables, plots), and render to HTML, PDF, or Word formats.
 Version-controlled notebooks ensure analysis reproducibility @sandve2013reproducible and facilitate collaborative model development.
 
-*Regulatory-Ready Outputs*: Export formats compatible with regulatory submission requirements including SDTM/ADaM datasets,
+*Regulatory-Ready Outputs*: Export formats compatible with regulatory submission requirements including Study Data Tabulation Model (SDTM)/ADaM datasets,
 tables/listings/figures matching submission standards, and model documentation with parameter estimates, covariance matrices, and diagnostic plots.
 
 === Performance and Deployment
 
-*Parallel Computing*: First-class support for multithreading (within-node parallelism across CPU cores) and distributed computing (across-node parallelism across cluster or cloud nodes).
+*Parallel Computing*: First-class support for multithreading (within-process parallelism across CPU cores) and distributed computing (across-process parallelism across cluster or cloud nodes).
 Julia's parallel constructs enable transparent parallelization—many Pumas functions automatically parallelize over subjects or simulation replicates when multiple cores are available.
 
 *Deployment Flexibility*:
 - Desktop: macOS, Windows with identical functionality across platforms
-- HPC Clusters: Integration with job schedulers (SLURM)
+- High-Performance Computing (HPC) Clusters: Integration with job schedulers (SLURM)
 - Cloud: Kubernetes deployment for elastic scaling—automatically provision compute resources based on workload
 
 === User Interfaces and Learning Resources
@@ -479,7 +502,7 @@ PumasCP lowers entry barrier for users preferring graphical interfaces while mai
 - Code example generation (request examples for specific analyses, receive working code)
 - Error diagnosis and troubleshooting (paste error messages, receive explanations and solutions)
 
-*Tutorials*: Comprehensive tutorial collection at tutorials.pumas.ai covering:
+*Tutorials*: Comprehensive tutorial collection at tutorials.pumas.ai including a complete onboarding Learning Path series covering:
 - Getting started: installation, first PK model, basic diagnostics
 - Intermediate topics: covariate modeling, multi-endpoint analysis, VPC interpretation
 - Advanced workflows: optimal design, Bayesian inference, machine learning integration
@@ -499,13 +522,14 @@ We demonstrate:
 - Data preparation and exploratory analysis (Section 3)
 - Model specification using the ```julia @model``` macro (Section 4)
 - Population pharmacokinetic modeling with diagnostics and refinement (Section 5)
-- Multi-endpoint PK-PD modeling with indirect response dynamics (Section 6)
+- Multi-endpoint PKPD modeling with indirect response dynamics (Section 6)
 - Simulation-based decision support for dose selection (Section 7)
 
 Section 8 discusses platform integration benefits, performance characteristics, extensibility, and current capabilities.
 
-The complete annotated workflow appears in the Appendix with 14 sections (A.1-A.14) providing full code, implementation details,
+The complete annotated workflow appears in the Appendix with 9 sections (A.1-A.9) providing full code, implementation details,
 and alternative approaches. Throughout the article, we reference specific Appendix sections for readers seeking additional depth or implementation guidance.
+The appendix is accessible via an #link("https://miniature-giggle-zrvq9og.pages.github.io/")[appendix website].
 
 == Target Audience and Prerequisites
 
@@ -520,7 +544,7 @@ Background in differential equations, maximum likelihood estimation, or Bayesian
 - Elementary statistics (likelihood, random effects, residual error, confidence intervals)
 - Familiarity with programming concepts (functions, data structures, control flow)
 
-Julia syntax is explained as encountered. Full Julia language documentation is available at docs.julialang.org @juliadocs
+Julia syntax is explained as encountered. Full Julia language documentation is available at docs.julialang.org @juliadocs.
 Users familiar with MATLAB, Python, or R will find Julia syntax recognizable.
 
 
@@ -531,7 +555,7 @@ Users familiar with MATLAB, Python, or R will find Julia syntax recognizable.
 //         S4(["Section 4: Model Spec"])
 //         S5(["Section 5: PopPK Fitting & Diagnostics"])
 //         D{Adequate?}
-//         S6(["Section 6: Multi-Endpoint PK-PD Modeling"])
+//         S6(["Section 6: Multi-Endpoint PKPD Modeling"])
 //         S7(["Section 7: Simulations for Decision Support"])
 
 //         S3 --> S4 --> S5 --> D
@@ -585,7 +609,7 @@ for Phase 2 clinical development.
 *Covariates*: Sex (male/female), baseline body weight (kg), dose level (mg), treatment group
 
 *Data Source*: Simulated dataset (`intro_paper_data.csv`) designed to exhibit realistic PK and PD characteristics.
-Simulation code provided in Appendix A.1. Data available as supplementary material.
+Simulation code provided as supplementary material (`1_data_simulation.qmd`). Data available as supplementary material.
 
 == Loading and Structuring Data
 
@@ -598,9 +622,6 @@ using PumasUtilities, AlgebraOfGraphics, CairoMakie
 # Load data from CSV
 path = joinpath(@__DIR__, "data", "intro_paper_data.csv")
 wide_data = CSV.read(path, DataFrame)
-
-# Inspect data structure
-first(wide_data, 5)
 ```
 
 The dataset follows a standard pharmacometric format with columns:
@@ -630,8 +651,7 @@ Pumas requires conversion from tabular data to `Population` objects. We create p
 
 ```julia
 # Population excluding placebo (for PK modeling)
-julia> # population without placebo data
-       population = read_pumas(
+julia> population = read_pumas(
            (@rsubset wide_data :DOSE ≠ 0);  # exclude placebo subjects
            id=:ID,
            time=:NOMTIME,
@@ -719,7 +739,7 @@ table_one(
 )
 ```
 
-Output shows sample sizes, mean ± SD for weight stratified by sex. This confirms covariate balance and identifies potential
+Output shows sample sizes, mean ± standard deviation (SD) for weight stratified by sex. This confirms covariate balance and identifies potential
 confounding (e.g., if all females received low doses).
 
 See Appendix A.2 for extended demographic tables stratified by dose level and additional covariates.
@@ -748,8 +768,7 @@ Pharmacodynamic endpoints require similar exploration. See Appendix A.2 for:
 - Hysteresis analysis (temporal relationship between PK and PD)
 - Covariate effects on PD baseline
 
-*Key Insight from EDA*: PD response shows counter-clockwise hysteresis (effect continues rising as concentrations fall),
-suggesting indirect response mechanism rather than direct effect. This motivates the indirect response model in Section 6.
+*Key Insight from EDA*: PD response shows a positive relationship with drug concentration, with temporal dynamics suggesting an indirect response mechanism rather than direct effect. This motivates the indirect response model in Section 6.
 
 == Summary: Data Preparation Stage
 
@@ -765,15 +784,15 @@ The ```julia Population``` object is ready for model fitting. Population structu
 informs model specification in the next section.
 
 *Appendix References*:
-- Appendix A.1: Complete data simulation code
+- Supplementary: Complete data simulation code (`1_data_simulation.qmd`)
 - Appendix A.2: Extended EDA (additional tables, PD visualization, exposure-response analysis)
 - Appendix A.3: Non-compartmental analysis workflow
 
-= Model Specification with the ```julia @model``` Macro
+= Model Specification with the ```julia @model``` macro
 <sec-model-spec>
 
 Pumas models are defined using the ```julia @model``` macro, which provides a declarative domain-specific language for pharmacometric model specification.
-This section demonstrates model construction through progressive examples: one-compartment, covariate addition, and multi-endpoint PK-PD.
+This section demonstrates model construction through progressive examples: one-compartment, covariate addition, and multi-endpoint PKPD.
 
 == Declarative Modeling Philosophy
 
@@ -990,14 +1009,14 @@ Vc = θvc * (WEIGHTB / 77)^θvcWEIGHTB * exp(η[2])
 
 Standardizing at median weight makes ```julia θvc``` interpretable as typical volume for median-weight subject.
 
-== Multi-Endpoint PK-PD Model
+== Multi-Endpoint PKPD Model
 
 Complex models require explicit ordinary differential equations. We extend to pharmacodynamics using indirect response @dayneka1993indirect @jusko1994indirect with inhibition of degradation (Kout inhibition), effect compartment for hysteresis, and Hill coefficient for steep exposure-response.
 
 ```julia
 mdl_pkpd = @model begin
     @metadata begin
-        desc = "Simultaneous PK-PD model with indirect response (Kout inhibition, effect compartment, Hill coefficient)"
+        desc = "Simultaneous PKPD model with indirect response (Kout inhibition, effect compartment, Hill coefficient)"
         timeu = u"hr"
     end
 
@@ -1105,7 +1124,7 @@ PumasModel
 5. ```julia Response'```: Indirect response with Kout inhibition driven by effect compartment
 
 PD equation breakdown:
-- Effect compartment: ```julia Ce' = Ke0 * (Conc - Ce)``` introduces temporal delay between plasma concentration and effect site, producing the counter-clockwise hysteresis observed in EDA
+- Effect compartment: ```julia Ce' = Ke0 * (Conc - Ce)``` introduces temporal delay between plasma concentration and effect site, allowing the model to capture delayed PD response relative to plasma concentrations
 - Inhibition term: $"INH" = "imax" dot "Ce"^gamma slash ("ic50"^gamma + "Ce"^gamma)$ is the Hill function with coefficient γ controlling exposure-response steepness
 - Kout inhibition: ```julia Response' = kin - kout * (1 - INH) * Response``` reduces degradation rate when drug is present
 
@@ -1135,7 +1154,7 @@ error model in ```julia @derived```. No need to trace procedural code to infer m
 or user-defined functions for complex PK processes.
 
 *Appendix Reference*: See Appendix A.4 for complete model definitions, including intermediate models (two-compartment without covariates,
-models with full vs diagonal covariance), and Appendix A.5 for initial validation procedures.
+models with full vs diagonal covariance), and initial validation procedures.
 
 = Model Fitting and Diagnostics
 <sec-fitting>
@@ -1198,7 +1217,7 @@ foce_fit_2cmt = fit(
 )
 ```
 
-```julia FOCE``` (First Order Conditional Estimation) is the most commonly used algorithm @bauer2019nonmem @upton2014nonmem for population PK/PD. Estimation time depends on model complexity
+```julia FOCE``` (First Order Conditional Estimation) is the most commonly used algorithm @bauer2019nonmem @upton2014nonmem for population PKPD. Estimation time depends on model complexity
 and data size. For our case study (two-compartment, 50 subjects, ~1000 observations), ```julia FOCE``` completes in minutes.
 
 See Section 5.6 for formal uncertainty quantification via ```julia infer()```.
@@ -1212,9 +1231,9 @@ foce_inspect_2cmt = inspect(foce_fit_2cmt)
 ```
 
 This creates a ```julia FittedPumasModel``` containing:
-- *PRED*: Population predictions (using θ only, no random effects)
-- *IPRED*: Individual predictions (using θ and empirical Bayes estimates η̂)
-- *CWRES* @hooker2007cwres: Conditional weighted residuals (accounts for uncertainty in η̂)
+- *Population Predictions (PRED)*: using θ only, no random effects
+- *Individual Predictions (IPRED)*: using θ and empirical Bayes estimates η̂
+- *Conditional Weighted Residuals (CWRES)* @hooker2007cwres: accounts for uncertainty in η̂
 - *EBEs*: Empirical Bayes estimates of individual random effects (η̂ values)
 
 All outputs are DataFrames accessible via ```julia DataFrame(foce_inspect_2cmt)```, enabling custom analyses.
@@ -1324,9 +1343,9 @@ end
 ```
 
 Metrics include:
-- *Log-likelihood*: Higher is better (less penalized for complexity)
-- *AIC* @akaike1974aic: $-2 dot "LL" + 2 dot k$ where k = number of parameters. Lower is better.
-- *BIC* @schwarz1978bic: $-2 dot "LL" + k dot log(n)$ where n = number of observations. Lower is better, penalizes complexity more than AIC.
+- *Log-Likelihood (LL)*: Higher is better (less penalized for complexity)
+- *Akaike Information Criterion (AIC)* @akaike1974aic: $-2 dot "LL" + 2 dot k$ where k = number of parameters. Lower is better.
+- *Bayesian Information Criterion (BIC)* @schwarz1978bic: $-2 dot "LL" + k dot log(n)$ where n = number of observations. Lower is better, penalizes complexity more than AIC.
 
 Two-compartment model has lower BIC despite additional parameters (Q, Vp), indicating improved fit outweighs complexity penalty.
 
@@ -1360,7 +1379,7 @@ foce_noka = fit(
 bic(foce_fit_2cmt), bic(foce_noka)  # Lower BIC favors simpler model
 ```
 
-Full code for model without Ka random effect in Appendix A.7.
+Full code for model without Ka random effect in Appendix A.4.
 
 === Covariate Identification
 
@@ -1382,7 +1401,7 @@ Interpretation:
 After identifying covariates, implement in model (as shown in Section 4) and re-fit. EBE plots for covariate model should show reduced trends,
 confirming covariates explain variability previously captured by random effects.
 
-See Appendix A.9 for complete covariate modeling workflow including automated selection via ```julia covariate_select()```.
+See Appendix A.4 for complete covariate modeling workflow including automated selection via ```julia covariate_select()```.
 
 == Parameter Uncertainty Quantification
 
@@ -1395,9 +1414,9 @@ coeftable(infer_result)
 
 Output table includes:
 - *Estimate*: Point estimates (θ̂, Ω̂, σ̂)
-- *SE*: Standard errors from sandwich estimator (observed Fisher information)
-- *95% CI*: Confidence intervals (Estimate ± 1.96 × SE for normal approximation)
-- *RSE%*: Relative standard error (SE / Estimate × 100%). RSE < 30% indicates good precision.
+- *Standard Error (SE)*: from sandwich estimator (observed Fisher information)
+- *95% Confidence Interval (CI)*: Estimate ± 1.96 × SE for normal approximation
+- *Relative Standard Error (RSE%)*: SE / Estimate × 100%. RSE < 30% indicates good precision.
 
 Alternative inference methods:
 
@@ -1414,7 +1433,7 @@ but requires substantial computation (200 resamples × model fit time).
 
 SIR samples from asymptotic distribution, weights by likelihood ratios. Faster than bootstrap, more robust than sandwich for small samples.
 
-See Appendix A.10 for detailed inference method comparison and variance-covariance matrix interpretation.
+See Appendix A.5 for detailed inference method comparison and variance-covariance matrix interpretation.
 
 == Summary: Model Fitting and Diagnostics
 
@@ -1433,41 +1452,34 @@ The integrated workflow enables rapid iteration. Diagnostic plots generate with 
 Model comparison uses consistent interfaces.
 
 For our case study, the final model is two-compartment with sex on CL, weight on Vc, and four random effects (CL, Vc, Q, Vp).
-This model serves as the PK component for multi-endpoint PK-PD analysis in Section 6.
+This model serves as the PK component for multi-endpoint PKPD analysis in Section 6.
 
 *Appendix References*:
-- Appendix A.5: Initial validation and prior predictive checks
-- Appendix A.6: Complete fitting workflows with convergence diagnostics
-- Appendix A.7: Extended diagnostics (shrinkage, influence, additional plots)
-- Appendix A.8: Model comparison procedures and likelihood ratio testing
-- Appendix A.9: Covariate modeling details and automated selection
-- Appendix A.10: Inference methods (sandwich, bootstrap, SIR) and interpretation
+- Appendix A.4: Complete PK modeling workflow (validation, fitting, diagnostics, model comparison, covariates)
+- Appendix A.5: Inference methods (sandwich, bootstrap, SIR) and uncertainty quantification
 
-= Multi-Endpoint PK-PD Modeling
+= Multi-Endpoint PKPD Modeling
 <sec-pkpd>
 
 With an adequate PK model established, we extend to pharmacodynamics. This section demonstrates multi-endpoint modeling using
-the PK-PD model defined in Section 4.3, focusing on the workflow from exposure-response exploration through parameter estimation.
+the PKPD model defined in Section 4.3, focusing on the workflow from exposure-response exploration through parameter estimation.
 
 == Exposure-Response Analysis
 
-Before fitting the PK-PD model, exposure-response visualization reveals the underlying concentration-effect relationship.
-Using DataFramesMeta.jl, we extract matched PK-PD observations from the inspection results and bin concentrations
+Before fitting the PKPD model, exposure-response visualization reveals the underlying concentration-effect relationship.
+Using DataFramesMeta.jl, we extract matched PKPD observations from the inspection results and bin concentrations
 to calculate mean PD responses with standard errors across concentration ranges.
 
 #figure(
   image("figures/fig5-errelation.png", width: 100%),
-  caption: [Exposure-response relationship showing PD biomarker response vs PK concentration. Individual observations (points colored by dose) and binned means ± standard error (black squares with whiskers) demonstrate saturable response consistent with Kout inhibition model with Hill coefficient. Counter-clockwise hysteresis (response rising as concentrations fall) confirms effect compartment mechanism. Log-scale x-axis spans physiological concentration range.],
+  caption: [Exposure-response relationship showing PD biomarker response (IU/L) versus PK concentration (ng/mL) on a log scale. Individual observations are shown as points colored by dose level (100--1600 mg), with binned means and standard errors displayed as black squares with whiskers. PD response increases with increasing PK concentration across the observed range.],
 ) <fig-exposure-response>
 
-The exposure-response plot (Figure 5) reveals characteristic sigmoidal kinetics with hysteresis: PD response increases nonlinearly with effect site concentration,
-approaching a plateau consistent with the Hill function $"imax" dot "Ce"^gamma slash ("ic50"^gamma + "Ce"^gamma)$ in the model.
-Individual variability around binned means reflects inter-subject differences in IC50 and Ke0, captured by the random effect structure. The counter-clockwise hysteresis (response continues rising as plasma concentrations fall) confirms the effect compartment mechanism.
-This visualization confirms the indirect response model with Kout inhibition and effect compartment is mechanistically appropriate.
+The exposure-response plot (Figure 5) shows a positive relationship between PK concentration and PD response across the observed dose range. Individual variability around binned means reflects inter-subject differences in pharmacodynamic parameters, captured by the random effect structure. This visualization supports the use of an indirect response model linking drug exposure to biomarker response.
 
-== Simultaneous PK-PD Estimation
+== Simultaneous PKPD Estimation
 
-The PK-PD model (Section 4.3) handles both CONC and PD_CONC observations within a single ```julia @derived``` block.
+The PKPD model (Section 4.3) handles both CONC and PD_CONC observations within a single ```julia @derived``` block.
 Pumas automatically matches observation names to data columns, calculating likelihood contributions from
 whichever observations are present at each time point. This design enables sparse PD sampling schedules
 without special handling—missing observations simply contribute nothing to the likelihood at those times.
@@ -1498,12 +1510,12 @@ previously estimated values while only PD parameters (kin, kout, IC50, Imax, Ke0
 
 This approach offers practical benefits: faster estimation from reduced parameter space, stable convergence
 since PK dynamics are already validated, and tractability even with sparse PD data. The alternative—removing
-```julia constantcoef``` to re-estimate everything simultaneously—accounts for PK-PD parameter correlations but requires
+```julia constantcoef``` to re-estimate everything simultaneously—accounts for PKPD parameter correlations but requires
 richer data and longer computation times.
 
 === Diagnostics for Multi-Endpoint Models
 
-The same diagnostic functions apply to PD endpoints. Calling ```julia inspect()``` on the fitted PK-PD model generates
+The same diagnostic functions apply to PD endpoints. Calling ```julia inspect()``` on the fitted PKPD model generates
 predictions and residuals for both observation types. Diagnostic plots accept an ```julia observations``` argument
 to focus on specific endpoints:
 
@@ -1512,15 +1524,15 @@ goodness_of_fit(inspect(pd_fit); observations = [:PD_CONC])
 ```
 
 For PD with indirect response dynamics, particular attention goes to time trends in residuals—systematic
-patterns would indicate the model fails to capture the temporal delay between concentration changes and
+patterns would indicate the model fails to capture the temporal relationship between concentration changes and
 response changes. Random CWRES scatter around zero confirms the indirect response mechanism adequately
-describes the observed hysteresis.
+describes the observed PD dynamics.
 
 == Sequential vs Simultaneous Modeling
 
 An alternative workflow, sequential modeling, treats individual PK parameters as fixed inputs for the PD model. In Pumas, this is implemented by passing the full set of estimated PK coefficients to the ```julia fit``` function via the ```julia constantcoef``` argument, ensuring that only PD-specific parameters are optimized while maintaining the PK structure. This approach suits scenarios where PK and PD data come from different studies or where separate teams develop each model component.
 
-Sequential modeling trades statistical efficiency for computational convenience. It does not propagate PK parameter uncertainty into PD estimates and cannot capture PK-PD parameter correlations. For our case study with rich PK and PD data from the same subjects, simultaneous modeling (with fixed PK parameters) provides appropriate uncertainty characterization. Appendix A.11 details both workflows with complete implementations.
+Sequential modeling trades statistical efficiency for computational convenience. It does not propagate PK parameter uncertainty into PD estimates and cannot capture PKPD parameter correlations. For our case study with rich PK and PD data from the same subjects, simultaneous modeling (with fixed PK parameters) provides appropriate uncertainty characterization. Appendix A.6 details both workflows with complete implementations.
 
 == Design Philosophy: Unified Multi-Endpoint Handling
 
@@ -1532,22 +1544,22 @@ across all model outputs.
 This uniformity reflects a core design principle: complexity in the scientific problem (multiple endpoints,
 indirect mechanisms, covariate effects) should not require complexity in the software interface.
 The ```julia @model``` macro's block structure isolates each modeling concern—parameters, dynamics, observations—so
-extending from PK-only to PK-PD requires adding blocks rather than learning new APIs.
+extending from PK-only to PKPD requires adding blocks rather than learning new APIs.
 
 == Summary
 
-Multi-endpoint PK-PD modeling in Pumas follows the same workflow as single-endpoint analysis:
+Multi-endpoint PKPD modeling in Pumas follows the same workflow as single-endpoint analysis:
 define the model with ```julia @model```, validate initial parameters, fit with ```julia fit()```, diagnose with ```julia inspect()```.
-The exposure-response relationship with hysteresis confirms Kout inhibition with effect compartment is appropriate for indirect response modeling.
+The exposure-response relationship confirms the indirect response model appropriately captures the PKPD dynamics.
 Fixing well-characterized PK parameters during PD estimation balances statistical rigor with computational efficiency.
-The validated PK-PD model now enables simulation-based decision support in Section 7.
+The validated PKPD model now enables simulation-based decision support in Section 7.
 
-*Appendix Reference*: Appendix A.11 provides complete code for simultaneous and sequential PK-PD workflows.
+*Appendix Reference*: Appendix A.6 provides complete code for simultaneous and sequential PKPD workflows.
 
 = Simulation for Decision Support
 <sec-simulation>
 
-The validated PK-PD model enables simulation of unobserved scenarios—doses, durations, and populations beyond those studied.
+The validated PKPD model enables simulation of unobserved scenarios—doses, durations, and populations beyond those studied.
 This section demonstrates dose selection through target attainment analysis, translating model predictions into
 clinically interpretable metrics that inform development decisions.
 
@@ -1593,7 +1605,7 @@ random seed generates identical virtual populations across analysis runs.
 
 == Simulation Execution and Output Handling
 
-The ```julia simobs()``` function executes simulation using the validated PK-PD model and estimated parameters:
+The ```julia simobs()``` function executes simulation using the validated PKPD model and estimated parameters:
 
 ```julia
 sim_results = simobs(mdl_pkpd, pop_scenarios, coef(pd_fit);
@@ -1643,18 +1655,18 @@ enabling visual assessment of target attainment and excursion patterns.
 
     // Probability of TA
     table.cell(colspan: 7)[*Probability of TA*],
-    [#h(1em) Median], [0], [40], [100], [100], [100], [100],
-    [#h(1em) 95% CI], [\[0, 0\]], [\[14.8, 60\]], [\[90, 100\]], [\[100, 100\]], [\[100, 100\]], [\[100, 100\]],
+    [#h(1em) Median], [0], [0], [0], [40], [100], [60],
+    [#h(1em) 95% CI], [\[0, 0\]], [\[0, 0\]], [\[0, 10\]], [\[10, 60\]], [\[90, 100\]], [\[40, 85.3\]],
 
     // Time to Target
     table.cell(colspan: 7)[*Time to Target*],
-    [#h(1em) Median], [--], [124], [120], [120], [120], [120],
-    [#h(1em) 95% CI], [--], [\[120, 133\]], [\[120, 121\]], [\[120, 120\]], [\[120, 120\]], [\[120, 120\]],
+    [#h(1em) Median], [--], [--], [132], [124], [120], [120],
+    [#h(1em) 95% CI], [--], [--], [\[120, 142\]], [\[120, 135\]], [\[120, 123\]], [\[120, 120\]],
 
     // Time in TR
     table.cell(colspan: 7)[*Time in TR*],
-    [#h(1em) Median], [--], [82.8], [99.2], [99.2], [99.2], [99.2],
-    [#h(1em) 95% CI], [--], [\[46.7, 99.2\]], [\[93, 99.2\]], [\[99.2, 99.2\]], [\[99.2, 99.2\]], [\[99.2, 99.2\]],
+    [#h(1em) Median], [--], [--], [49.6], [82.7], [95.5], [66.1],
+    [#h(1em) 95% CI], [--], [--], [\[9.12, 99.2\]], [\[38.8, 99.2\]], [\[80.9, 99.2\]], [\[42.4, 93\]],
 
     table.hline(),
   ),
@@ -1670,11 +1682,11 @@ enabling visual assessment of target attainment and excursion patterns.
 
 == Dose Selection Rationale
 
-The metrics reveal distinct dose-response patterns. The 100 mg dose achieves target in only 40% of subjects with prolonged onset (124 hours) and limited time in range (82.8%), indicating subtherapeutic exposure. The 200 mg dose reaches near-complete target attainment (100%) with consistent onset (120 hours) and high time in range (99.2%).
+The metrics reveal distinct dose-response patterns. The 100 mg dose fails to achieve target attainment (0%), indicating subtherapeutic exposure. The 200 mg dose shows minimal improvement with 0% median target attainment, prolonged onset (132 hours), and limited time in range (49.6%). The 400 mg dose achieves partial response with 40% target attainment, faster onset (124 hours), and improved time in range (82.7%).
 
-Higher doses (400-1600 mg) maintain 100% target attainment with identical onset times (120 hours) and time in range (99.2%), suggesting a plateau effect beyond 200 mg. Figure 6 shows median responses within therapeutic range across all active doses, with 90% prediction intervals narrowing at higher doses.
+The 800 mg dose demonstrates optimal performance: 100% target attainment, rapid onset (120 hours), and the highest time in therapeutic range (95.5%). Notably, the 1600 mg dose shows reduced efficacy compared to 800 mg, with target attainment dropping to 60% and time in range decreasing to 66.1%, suggesting that higher exposures may exceed the upper therapeutic threshold.
 
-*Recommendation*: 200 mg QD provides optimal risk-benefit profile—complete target attainment with minimal dose required, reducing potential for exposure-related adverse effects while ensuring therapeutic efficacy for Phase 2 development.
+*Recommendation*: 800 mg QD provides optimal risk-benefit profile—complete target attainment with maximal time in therapeutic range. The decreased efficacy at 1600 mg supports 800 mg as the optimal dose, balancing therapeutic efficacy against potential exposure-related effects for Phase 2 development.
 
 == Design Philosophy: Unified Simulation Framework
 
@@ -1689,7 +1701,7 @@ estimates, or hypothetical values—and the downstream analysis applied to simul
 
 This uniformity reflects a design principle: the mathematical operation of simulating from a model is
 identical regardless of purpose. Separating simulation mechanics from application-specific analysis
-enables flexible reuse while maintaining a minimal, learnable API.
+enables flexible reuse while maintaining a minimal, learnable Application Programming Interface (API).
 
 == Summary
 
@@ -1706,7 +1718,7 @@ The workflow demonstrated—model development → validation → simulation → 
 model-informed drug development @marshall2016midd @barrett2022midd (MIDD), where quantitative modeling
 directly supports clinical and regulatory decision-making.
 
-*Appendix Reference*: Appendix A.12 provides complete metric calculation code, extended scenarios
+*Appendix Reference*: Appendix A.7 provides complete metric calculation code, extended scenarios
 (alternative dosing frequencies, population subgroups), sensitivity analyses to parameter uncertainty,
 and guidelines for simulation study design.
 
@@ -1752,8 +1764,8 @@ Function interfaces follow uniform patterns:
 - ```julia goodness_of_fit()``` and other diagnostic plots accept an ```julia observations``` argument to focus on specific endpoints
 
 Consistency reduces cognitive load. Learning one workflow (e.g., ```julia FOCE``` estimation for a PK model) transfers directly to other contexts
-(```julia FOCE``` for PK-PD, ```julia SAEM``` for complex random effects, Bayesian for prior incorporation). As demonstrated in Sections 6 and 7,
-extending from single-endpoint PK to multi-endpoint PK-PD and from model validation to scenario simulation requires no new syntax—only
+(```julia FOCE``` for PKPD, ```julia SAEM``` for complex random effects, Bayesian for prior incorporation). As demonstrated in Sections 6 and 7,
+extending from single-endpoint PK to multi-endpoint PKPD and from model validation to scenario simulation requires no new syntax—only
 different inputs to the same functions.
 
 === Reproducibility Infrastructure
@@ -1772,7 +1784,7 @@ Quarto notebooks execute code blocks, capture outputs, and render to publication
 === Supported Applications
 
 Pumas supports:
-- *Phase 1-3 clinical trials*: PK, PK-PD, dose-response modeling for regulatory submissions @fda2022popPK
+- *Phase 1-3 clinical trials*: PK, PKPD, dose-response modeling for regulatory submissions @fda2022popPK
 - *Non-compartmental analysis*: Exposure metrics with bioequivalence testing and dose proportionality
 - *Population modeling*: Covariate selection, model comparison, parameter uncertainty quantification
 - *Simulation-based design*: Dose optimization, sample size determination, protocol evaluation
@@ -1785,7 +1797,7 @@ Pumas supports:
 Julia syntax is similar to MATLAB and Python:
 - 1-based indexing
 - Mathematical notation support (Greek letters, subscripts)
-- Interactive REPL for exploration
+- Interactive Read-Eval-Print Loop (REPL) for exploration
 - Dynamic typing with optional type annotations
 
 Pharmacometricians with computational backgrounds (familiar with scripting in R, or MATLAB) typically become productive within 1-2 weeks.
@@ -1802,7 +1814,7 @@ Key concepts to internalize:
 - *Pumas Tutorials*: tutorials.pumas.ai @pumastutorials covers pharmacometric workflows from basic through advanced
 - *AskPumas AI*: Interactive assistant for on-demand help with code examples and explanations
 
-IDE support via VS Code with Julia extension provides professional development environment comparable to RStudio for R.
+Integrated Development Environment (IDE) support via VS Code with Julia extension provides professional development environment comparable to RStudio for R.
 
 == Limitations and Considerations
 
@@ -1839,7 +1851,7 @@ model-based dose selection. We demonstrated:
 - Integrated data preparation and exploratory analysis (Section 3)
 - Declarative model specification with `@model` macro (Section 4)
 - Progressive estimation and comprehensive diagnostics (Section 5)
-- Multi-endpoint PK-PD modeling with exposure-response analysis (Section 6)
+- Multi-endpoint PKPD modeling with exposure-response analysis (Section 6)
 - Simulation-based decision support for dose selection (Section 7)
 
 The workflow executed entirely within Pumas, eliminating tool-switching overhead and data conversion steps that introduce errors and slow iteration.
@@ -1861,7 +1873,7 @@ Claude Sonnet 4.5, via GitHub Copilot was utilized in the preparation of this do
 
 *Vijay Ivaturi:* Conceptualization, Writing - Original Draft, Writing - Review & Editing
 
-*Patrick Mogenson:* Conceptualization, Writing - Original Draft, Writing - Review & Editing
+*Patrick Mogensen:* Conceptualization, Writing - Original Draft, Writing - Review & Editing
 
 *Andreas Noack*: Reviewing & Editing
 
@@ -1874,6 +1886,8 @@ Claude Sonnet 4.5, via GitHub Copilot was utilized in the preparation of this do
 *Michael Hatherly*: Reviewing & Editing
 
 *Niklas Korsbo*: Reviewing & Editing
+
+*Chris Elrod:* Reviewing & Editing
 
 == Conflicts of Interest
 

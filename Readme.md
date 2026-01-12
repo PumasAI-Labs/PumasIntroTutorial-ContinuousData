@@ -1,0 +1,5 @@
+### A comprehensive introduction to Pumas
+
+Pumas is a powerful and flexible software package for pharmacometric modeling and simulation. It is designed to be easy to use, yet flexible enough to handle complex problems. Pumas is built on top of the Julia programming language, which is a high-level, high-performance language for technical computing. This combination of power and flexibility makes Pumas an ideal tool for pharmacometric modeling and simulation.
+
+This repository is the accompanying material for the manuscript "A comprehensive introduction to Pumas". The manuscript is a comprehensive introduction to Pumas, covering everything from the basics of pharmacometric modeling to advanced topics such as population modeling and simulation using Pumas. The manuscript is designed to be accessible to readers with a wide range of backgrounds, from beginners to experienced pharmacometricians.
