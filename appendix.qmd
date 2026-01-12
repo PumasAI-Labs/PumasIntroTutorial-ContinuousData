@@ -1,0 +1,2572 @@
+---
+title: "Appendix: Complete Annotated Workflow and Implementation Details"
+subtitle: "A Hands-On Journey Through Pharmacometric Analysis with Pumas"
+engine: julia
+execute:
+  echo: true
+julia:
+    exeflags: ["+Pumas@2.7.1"]
+---
+
+```{julia}
+using Pumas
+using PumasUtilities
+using DataFramesMeta
+using CSV
+using SummaryTables
+using CairoMakie
+using AlgebraOfGraphics
+using StableRNGs
+```
+
+```{julia}
+#| output: false
+rng = StableRNG(5438)
+```
+
+# Introduction: Your Guide to Integrated Pharmacometric Analysis
+
+Welcome to this comprehensive, hands-on tutorial that demonstrates the complete Pumas workflow for continuous data modeling. This appendix accompanies the main article by providing details needed to reproduce the analysis from scratch—every line of code, every modeling decision, and every diagnostic check.
+
+## What You'll Learn
+
+This tutorial walks through the PKPD workflow, from raw clinical trial data through to simulation-based dose recommendations. This document demonstrates how Pumas integrates each stage of the workflow:
+
+**Data Preparation** → **Exploratory Analysis** → **Non-Compartmental Analysis** → **Population PK Modeling** → **PK-PD Integration** → **Simulation & Decision Support**
+
+Along the way, you'll discover not just *what* to do, but *why* each step matters for robust drug development decisions.
+
+::: {.callout-note icon=false}
+## 📖 About This Dataset
+
+Throughout this tutorial, we analyze data from a synthetic multiple ascending dose (MAD) study designed to mirror real-world Phase 1 clinical trials:
+
+- **60 subjects** across 6 dose levels (placebo + 100, 200, 400, 800, 1600 mg)
+- **Pharmacokinetics**: Rich sampling on Days 1 and 6, sparse trough sampling between
+- **Pharmacodynamics**: Biomarker measurements focused at steady state
+- **Covariates**: Sex and baseline body weight
+
+The data was generated using known ground truth parameters (see `00_data_simulation.qmd`), allowing us to validate our modeling approach. However, we'll analyze it exactly as if it came from a real clinical trial—you won't need to know the true parameters to follow along!
+:::
+
+## How to Use This Appendix
+
+This document is designed to be:
+
+- **Executable**: Every code block runs in sequence—copy and paste to reproduce
+- **Educational**: Extensive explanations reveal the reasoning behind each choice
+- **Practical**: Tips, warnings, and best practices guide you toward real-world applications
+- **Modular**: Each section builds on previous work but can also serve as a standalone reference
+
+::: {.callout-tip}
+## 💡 Reading Strategies
+
+**First-time learners**: Read sequentially, executing each code block to build intuition
+
+**Experienced pharmacometricians**: Jump to specific sections using the table of contents—each analysis stage is self-contained
+
+**Reference seekers**: Use section cross-references to find detailed implementations
+:::
+
+## The Workflow Stages
+
+Our analysis follows the pharmacometric workflow presented in the main article (Figure 1). The appendix sections map to these stages:
+
+| Stage | Description | Appendix Section |
+|-------|-------------|------------------|
+| **1** | Data Preparation & Quality Checks | A.2 (#sec-data-prep) |
+| **2** | Exploratory Data Analysis | A.2 (#sec-data-prep) |
+| **3** | Non-Compartmental Analysis | A.3 (#sec-nca) |
+| **4-8** | Population PK Model Development | A.4-A.9 (#sec-model-dev) |
+| **9-10** | Parameter Inference & Uncertainty | A.10 (#sec-param-infer) |
+| **11** | Pharmacodynamic Modeling | A.11 (#sec-pd-model) |
+| **12** | Simulation for Decision Support | A.12 (#sec-sim) |
+
+Let's begin our journey with the most fundamental step: preparing our data for analysis.
+
+---
+
+## A.2 Data Preparation and Quality Assessment {#sec-data-prep}
+
+In any pharmacometric analysis, **data preparation is where rigor begins**. Before we fit a single model, we must ensure our data is clean, well-structured, and ready for analysis. This section demonstrates how Pumas transforms raw clinical trial data into analysis-ready population objects while maintaining data integrity at every step.
+
+### The Starting Point: Loading Raw Data
+
+Our journey begins with a CSV file exported from the clinical database—the standard format for pharmacometric analyses. Let's load it and take our first look:
+
+```{julia}
+path = joinpath(@__DIR__, "data", "intro_paper_data.csv")
+wide_data = CSV.read(path, DataFrame)
+first(wide_data, 5)
+```
+
+::: {.callout-note}
+## 📊 Understanding the Data Structure
+
+This dataset follows the "wide format" convention where each observation type has its own column (`CONC` for PK, `PD_CONC` for PD). This differs from "long format" where all observations share a single column with a type identifier.
+
+**Why wide format matters**: Pumas requires wide format. To read more on the data format requirements, see the [Data Representation Tutorial](https://tutorials.pumas.ai/html/LearningPaths/02-LP/04-Module/T1-DataRepresentation.html#representation-of-dependent-variables-wide-format){target="_blank"}.
+:::
+
+At this stage, we're looking for red flags:
+
+- Missing required columns (ID, TIME, AMT, EVID)?
+- Unexpected data types (text where we expect numbers)?
+- Implausible values (negative concentrations, impossible times)?
+
+The `first()` function gives us a quick preview. Everything looks reasonable—let's proceed to create our analysis populations.
+
+### Creating Analysis-Specific Populations
+
+Here's a key Pumas philosophy: **One dataset, multiple populations**. Different analyses require different data subsets and structures. We'll create three populations, each optimized for its intended use:
+
+1. **NCA population**: Days 1 & 6 only, active doses, rich PK sampling
+2. **NLME population (active)**: All time points, active doses, both PK and PD
+3. **NLME population (with placebo)**: Same as #2 but includes placebo for covariate checks
+
+#### Prepare NCA Population
+
+Non-compartmental analysis requires complete concentration-time profiles without gaps. We filter strategically:
+
+```{julia}
+df_nca = deepcopy(wide_data)
+
+# Filter to relevant rows: non-negative nominal time, active doses only, PK data only
+@rsubset! df_nca begin
+    :NOMTIME >= 0
+    :DOSE > 0
+    :PROFDAY ∈ [1, 6]  # First dose and steady state
+end
+
+# Transform nominal time from hours to days and add route information
+@rtransform! df_nca begin
+    :NOMTIME = :NOMTIME / 24  # NCA functions expect days
+    :ROUTE = "ev"  # extravascular (oral) administration
+end
+
+# Define units for NCA analysis
+timeu = u"d"      # days
+concu = u"ng/mL"  # nanograms per milliliter
+amtu = u"mg";      # milligrams
+```
+
+#### Create NCA Population Object
+
+Now we create the NCA population object:
+
+```{julia}
+population_nca = read_nca(
+    df_nca;
+    id=:ID,
+    time=:PROFTIME,  # Time since last dose
+    observations=:CONC,
+    amt=:AMT,
+    route=:ROUTE,
+    group=[:PROFDAY, :DOSE]  # Stratify by day and dose for comparisons
+)
+```
+
+The `group` argument tells Pumas we want to compare NCA metrics across dose levels and between Day 1 vs. Day 6.
+
+#### Prepare NLME Populations
+
+For nonlinear mixed-effects modeling, we need the full time course including dosing events:
+
+```{julia}
+# population with placebo data (for covariate balance checks)
+population_placebo = read_pumas(
+    wide_data;
+    id=:ID,
+    time=:NOMTIME,
+    observations=[:CONC, :PD_CONC],  # Multi-endpoint: both PK and PD
+    amt=:AMT,
+    cmt=:CMT,  # Compartment for dosing
+    evid=:EVID,  # Event ID: 1=dose, 0=observation
+    covariates=[:WEIGHTB, :SEX, :TRTACT, :DOSE]
+)
+
+# population without placebo data (for PK/PD model fitting)
+population = read_pumas(
+    filter(r -> r.DOSE != 0, wide_data);  # Exclude placebo
+    id=:ID,
+    time=:NOMTIME,
+    observations=[:CONC, :PD_CONC],
+    amt=:AMT,
+    cmt=:CMT,
+    evid=:EVID,
+    covariates=[:WEIGHTB, :SEX, :TRTACT, :DOSE]
+)
+```
+
+::: {.callout-tip}
+## 💡 Why Two NLME Populations?
+
+**With placebo** (`population_placebo`): Use this to verify demographic balance across treatment groups. Imbalances in sex or weight distributions could confound covariate analyses.
+
+**Without placebo** (`population`): Use this for PK/PD model fitting. Placebo subjects have zero drug concentration—they don't inform PK parameters and can cause numerical issues during estimation.
+:::
+
+### What Just Happened? Input Validation
+
+When you call `read_pumas()`, Pumas validates your data **immediately**:
+
+- ✓ Is time monotonically increasing within each subject?
+- ✓ Do all observation columns exist?
+- ✓ Are covariates complete (no missing values)?
+- ✓ Do dosing events have valid compartment assignments?
+
+If anything is wrong, you get a clear error message pointing to the specific problem—**before** you waste hours on model fitting.
+
+This is input validation at work: catch errors early when they're easy to fix, not after overnight estimation runs.
+
+### Data Preparation Checklist ✅
+
+Before moving to exploratory analysis, verify:
+
+- [ ] Data loaded without errors or warnings
+- [ ] Preview shows expected column names and types  
+- [ ] Multiple population objects created for different analyses
+- [ ] Units (if needed) are explicitly defined and consistent
+- [ ] Placebo vs. active treatment populations are clearly distinguished
+
+**Next step**: Now that our data is properly structured, let's explore it visually to understand what we're modeling...
+
+## A.2 (continued) Exploratory Data Analysis {#sec-eda}
+
+Before fitting models, it's essential to understand the structure and characteristics of the data. This corresponds to **Stage 2** in the workflow map (Figure 1). Exploratory data analysis (EDA) helps identify potential issues (missing data, outliers, data entry errors), understand covariate distributions, and visualize concentration-time profiles.
+
+#### Tables vs. Figures: DataFrames vs. Populations
+
+Pumas provides flexible tools for EDA that work with both raw DataFrames and structured Population objects:
+
+**Summary Tables**
+
+- Work with **processed DataFrames** (e.g., datasets prepared for non-compartmental or for compartmental analysis)
+- Created using `SummaryTables.jl` functions like `overview_table()`, `table_one()`, `listingtable()` and `summarytable()`
+- Ideal for demographic summaries, covariate distributions, and data quality checks
+
+**Visualizations**
+
+- Can be created from **either DataFrames or Population objects**:
+
+  - **DataFrames**: Use `AlgebraOfGraphics.jl` + `CairoMakie.jl` for full customization
+  - **Populations**: Use `PumasUtilities.jl` plotting functions for pharmacometric-specific visualizations
+
+**PumasUtilities Plotting Functions**
+
+- Work with both `Population` (NLME) and `NCAPopulation` (NCA) objects
+- Some functions are universal (e.g., `observations_vs_time()`), while others are analysis-specific (e.g., `summary_observations_vs_time()` for the case of NCA)
+- Built on top of `AlgebraOfGraphics.jl`, so plots can be easily extended and customized using the same syntax
+
+**Workflow Strategy**
+
+In this section, we demonstrate both approaches to explore PK and PD endpoints and understand covariate relationships. We'll clearly indicate whether we're using **[DataFrame]** or **[Population]** for each example, allowing you to choose the approach that best fits your workflow. Generally:
+
+- Use **DataFrames** when you need custom aggregations, filtering, or transformations before plotting
+- Use **Populations** when you want pharmacometric-specific plots with minimal code
+
+### Summary Tables
+
+#### Overview Table [DataFrame]
+
+One useful function to ensure the data was read correctly and to understand its structure is `overview_table()` from the SummaryTables.jl package:
+
+```{julia}
+#| out-width: 100%
+#| label: tbl-overview
+#| fig-cap: "Comprehensive data quality overview showing column types, summary statistics, unique value counts, distribution visualizations, and missing data proportions for all variables in the analysis dataset."
+overview_table(wide_data)
+```
+
+As we can see, it provides:
+
+- Column names and data types
+- Summary statistics (mean, median, min, max)
+- Number of unique values
+- Inline plots (sparklines) that depend on the column type
+- Proportion of missing values
+
+This single function gives a comprehensive overview of the entire dataset, making it easy to spot issues like unexpected missing data, incorrect data types, or unusual value ranges.
+
+#### Demographics Table [DataFrame]
+
+For demographic and covariate information, we create stratified summaries. The `table_one()` function provides publication-ready summary tables stratified by grouping variables:
+
+```{julia}
+#| out-width: 100%
+#| label: tbl-demographics
+#| tbl-cap: "Baseline demographic characteristics stratified by sex. Continuous variables presented as mean ± SD, categorical variables as n (%). Sample includes unique subjects from the analysis population."
+table_one(
+    unique(wide_data, :ID),
+    [:WEIGHTB => "Baseline Weight [kg]", :SEX => "Sex [Female/Male]"],
+    groupby=:SEX => "Sex",
+    show_n=true
+)
+```
+
+This produces a "Table 1" style summary commonly used in clinical publications, showing:
+
+- Sample sizes for each group
+- Mean ± SD for continuous variables (WEIGHTB)
+- Counts and percentages for categorical variables (SEX)
+
+::: {.callout-note}
+#### Advanced Tables (ⓐ)
+
+For more customized summary tables, including tables stratified by multiple variables, custom summary functions, or complex formatting, see the documentation for SummaryTables.jl package that offers extensive customization options for publication-quality tables.
+:::
+
+### PK Data Visualization
+
+Visual exploration of concentration-time profiles is essential for understanding PK characteristics including dose proportionality, accumulation, and between-subject variability.
+
+#### Mean Concentration-Time Profiles by Dose [Population]
+
+We begin by visualizing the average concentration-time profile for each dose level. This helps identify overall trends and assess whether the study design captured key PK features (absorption, distribution, elimination).
+
+First, we need to load the plotting packages:
+
+```{julia}
+using PumasUtilities
+using AlgebraOfGraphics
+using CairoMakie
+```
+
+#### PK Profiles by Day and Dose
+
+For multiple ascending dose studies, comparing first dose versus steady-state profiles reveals drug accumulation patterns.
+
+```{julia}
+#| output: false
+# Create mean concentration profile by dose and time
+df_mean = @chain wide_data begin
+    @rsubset :DOSE != 0
+    @by [:PROFDAY, :TRTACT, :PROFTIME] begin
+        :Cmean = mean(:CONC)
+        :Cmedian = median(:CONC)
+    end
+end
+@rsubset! df_mean :PROFDAY ∈ [1, 6]
+
+# Plot using AlgebraOfGraphics
+dose_renamer = renamer(map(d -> d => "$(Int(d)) mg", unique(wide_data.DOSE)))
+day_renamer = renamer(map(d -> d => "Day $(Int(d))", unique(df_mean.PROFDAY)))
+```
+
+```{julia}
+#| out-width: 100%
+#| label: fig-pk-by-day
+#| fig-cap: "Mean plasma concentration-time profiles comparing Day 1 (first dose) and Day 6 (approaching steady state) across dose levels. Log-scale y-axis enables comparison of elimination phases. Accumulation is evident as higher Day 6 concentrations relative to Day 1 at equivalent times post-dose."
+# First dosing interval (e.g., Day 1: 0-24 hours)
+plt_by_day = draw(data(@rsubset(df_mean, !ismissing(:Cmean))) *
+                  mapping(:PROFTIME, :Cmean; color=:TRTACT => "Dose",
+                      layout=:PROFDAY => day_renamer) *
+                  visual(Lines, linewidth=6),
+    axis=(;
+        xlabel="Time (hours)",
+        ylabel="Mean Concentration (ng/mL)",
+        yscale=log10,
+        ytickformat=x -> string.(round.(x; digits=1)),
+        yticks=[0.1, 1, 2, 4, 10, 20, 40, 80, 100],
+        ygridwidth=3,
+        yminorgridcolor=:lightgrey,
+        yminorticksvisible=true,
+        yminorgridvisible=true,
+        yminorticks=IntervalsBetween(10),
+    ),
+    legend=(; position=:bottom),
+    figure=(; size=(1600, 800), fontsize=28)
+)
+```
+
+or one can change the visualization to observe different doses in each panel and the accumulation as a group
+
+```{julia}
+#| out-width: 100%
+#| label: fig-pk-by-dose
+#| fig-cap: "Mean concentration-time profiles faceted by dose level, comparing Day 1 versus Day 6 within each panel. This layout emphasizes accumulation patterns at each dose while maintaining dose-level comparisons. Color distinguishes study days within each dose panel."
+# First dosing interval (e.g., Day 1: 0-24 hours)
+plt_by_dose = draw(data(@rsubset(df_mean, !ismissing(:Cmean))) *
+                   mapping(:PROFTIME, :Cmean; color=:PROFDAY => day_renamer,
+                       layout=:TRTACT => "Dose") *
+                   visual(Lines, linewidth=6),
+    axis=(;
+        xlabel="Time (hours)",
+        ylabel="Mean Concentration (ng/mL)",
+        yscale=log10,
+        ytickformat=x -> string.(round.(x; digits=1)),
+        yticks=[0.1, 1, 2, 4, 10, 20, 40, 80, 100],
+        ygridwidth=3,
+        yminorgridcolor=:lightgrey,
+        yminorticksvisible=true,
+        yminorgridvisible=true,
+        yminorticks=IntervalsBetween(5),
+    ),
+    legend=(; position=:bottom),
+    figure=(; size=(1600, 1200), fontsize=28)
+)
+```
+
+Comparing these two panels helps identify accumulation—if steady-state concentrations are substantially higher than first-dose concentrations, the drug is accumulating.
+
+#### Individual Variability: Spaghetti Plots
+
+Spaghetti plots reveal between-subject variability by overlaying individual profiles (gray) with population mean (red).
+
+```{julia}
+#| out-width: 100%
+#| label: fig-pk-spaghetti
+#| fig-cap: "Individual concentration-time profiles (gray, semi-transparent) overlaid with mean profile (red, bold) for each dose level and study day. Between-subject variability is visually apparent in the spread of individual trajectories. Profiles are faceted by dose (columns) and day (rows) to assess both dose-response and temporal patterns."
+# Add identifier for distinguishing data vs mean
+df_mean = @rsubset df_mean !ismissing(:Cmean)
+df_conc = @chain copy(wide_data) begin
+    @rsubset :DOSE != 0
+    @rsubset !ismissing(:CONC)
+    @rsubset :PROFDAY ∈ [1, 6]
+end
+df_conc.source .= "Individual"
+df_mean.source .= "Mean"
+
+# Create layers
+individual_layer = data(df_conc) *
+                   mapping(:PROFTIME, :CONC;
+                       group=:ID => nonnumeric,
+                       row=:PROFDAY => day_renamer,
+                       col=:TRTACT => "Dose") *
+                   visual(Lines; color=(:gray, 0.6), linewidth=0.7)
+
+mean_layer = data(df_mean) *
+             mapping(:PROFTIME, :Cmean;
+                 row=:PROFDAY => day_renamer,
+                 col=:TRTACT => "Dose") *
+             visual(Lines; color=:red, linewidth=4)
+
+draw(
+    individual_layer + mean_layer;
+    axis=(;
+        xlabel="Time (hours)",
+        ylabel="Concentration (ng/mL)",
+        yscale=log10,
+        ytickformat=x -> string.(round.(x; digits=1)),
+        yticks=[0.1, 1, 2, 4, 10, 20, 40, 60, 100],
+        ygridwidth=1,
+        yminorgridcolor=(:lightgrey, 0.5),
+        yminorticksvisible=true,
+        yminorgridvisible=true,
+        yminorticks=IntervalsBetween(2),
+        xticks=0:4:24,
+        limits=(nothing, 24, nothing, 100),
+    ),
+    figure=(; size=(1600, 1200), fontsize=28),
+)
+```
+
+This plot clearly shows the variability across subjects (gray lines) and how the mean profile (red line) represents the central tendency.
+
+#### Individual Subject Panels
+
+For detailed examination of individual profiles, the `observations_vs_time()` function creates separate panels for each subject, useful for identifying outliers or unusual PK patterns.
+
+```{julia}
+#| out-width: 100%
+#| label: fig-pk-individual-panels
+#| fig-cap: "Individual subject concentration-time profiles displayed in separate panels. Each panel shows observed concentrations for one subject across all study days and sampling times. Pagination enabled for datasets with many subjects; only first page shown. This view facilitates identification of subjects with unusual PK characteristics or potential data quality issues."
+using QuartoTools: Tabset
+
+function ovst(pop)
+    observations_vs_time(
+        pop;
+        observations=[:CONC],
+        paginate=true,
+        separate=true,
+        figure=(; size=(1200, 900), fontsize=24),
+        axis=(;
+            xlabel="Time (hours)",
+            ylabel="Concentration (ng/mL)",
+            ygridwidth=1,
+            yminorgridcolor=(:lightgrey, 0.5),
+            yminorticksvisible=true,
+            yminorgridvisible=true,
+            yminorticks=IntervalsBetween(2),
+        ),
+        legend=(; position=:bottom)
+    )
+end
+
+obs_plots = ovst(population)
+
+# Display all using Tabset
+Tabset([
+    "Panel $(id)" => plot for (id, plot) in enumerate(obs_plots)
+])
+```
+
+Setting `paginate = true` splits subjects across multiple figure pages, which is essential for datasets with many subjects (>9). Each page can be accessed via indexing (`obs_plots[1]`, `obs_plots[2]`, etc.).
+
+::: {.callout-note}
+#### Advanced Visualization (ⓐ)
+
+While we demonstrate basic plotting the tutorials in tutorials.pumas.ai provide comprehensive examples using AlgebraOfGraphics.jl and CairoMakie.jl for:
+
+- Publication-quality figures with custom themes
+- Complex faceting and stratification
+- Interactive plots for exploratory analysis
+- Visual predictive checks and diagnostic plots
+:::
+
+### PD Data Visualization
+
+Having characterized PK profiles, we now explore pharmacodynamic endpoints to understand exposure-response relationships, temporal dynamics, and patient variability in drug response.
+
+#### Pharmacodynamic Data Exploration
+
+In addition to characterizing PK profiles, exploratory analysis of pharmacodynamic endpoints is essential for understanding the exposure-response relationship. The `wide_data` DataFrame already contains matched PK (`:CONC`) and PD (`:PD_CONC`) observations at the same timepoints, making it straightforward to explore:
+
+1. **PD time-course profiles** - How does the biomarker change over time and across doses?
+2. **Exposure-response relationships** - How does PD relate to PK concentration?
+3. **Hysteresis and delay** - Is there a temporal lag between drug concentration and effect?
+4. **Covariate effects** - Do patient characteristics modify the exposure-response relationship?
+
+#### PD Time-Course by Dose [DataFrame]
+
+First, let's create a summary DataFrame for mean PD profiles by dose and time:
+
+```{julia}
+#| output: false
+# Calculate mean PD metrics by dose and time
+df_pd_mean = @chain wide_data begin
+    @rsubset :NOMTIME >= 0
+    @rsubset :PROFDAY >= 6
+    @rsubset !ismissing(:PD_CONC) && :EVID == 0
+    @by [:DOSE, :PROFDAY, :PROFTIME] begin
+        :PD_mean = mean(:PD_CONC)
+        :PD_median = median(:PD_CONC)
+        :PD_std = std(:PD_CONC)
+        :PD_n = length(:PD_CONC)
+        :PD_sem = std(:PD_CONC) / sqrt(length(:PD_CONC))
+        :PD_time = median(:PROFTIME)
+    end
+    @rtransform begin
+        :lci = :PD_mean - 1.96 * (:PD_sem)
+        :uci = :PD_mean + 1.96 * (:PD_sem)
+    end
+end
+```
+
+Now we can visualize the mean PD time-course profiles colored by dose:
+
+```{julia}
+#| out-width: 100%
+#| label: fig-pd-mean-timecourse
+#| fig-cap: "Mean pharmacodynamic response profiles over time at steady state (Day 6 onward) stratified by dose level. Lines represent mean response with 95% confidence intervals (shaded bands). Dose-dependent increase in response magnitude and duration demonstrates clear exposure-response relationship. Return to baseline after final dose indicates reversibility of effect."
+# Mean PD profiles with 95% CI ribbons by dose (Day 6)
+plt_pd_time_mean = data(df_pd_mean) *
+                   mapping(
+                       :PD_time => "Time (Days)",
+                       :PD_mean => "Mean PD Response (IU/L)";
+                       color=:DOSE => dose_renamer => "Dose",
+                   ) *
+                   (visual(Lines, linewidth=4))
+plt_pd_time_ci = data(df_pd_mean) *
+                 mapping(:PD_time => "Time (Days)",
+                     #  :PD_mean => "Mean PD Response (IU/L)",
+                     :lci => "Lower CI",
+                     :uci => "Upper CI",
+                     color=:DOSE => dose_renamer => "Dose") *
+                 visual(Band, alpha=0.4);
+
+draw(plt_pd_time_mean + plt_pd_time_ci;
+    axis=(;
+        xlabel="Time (Days)",
+        ylabel="Mean PD Response (IU/L)",
+    ),
+    legend=(; position=:bottom),
+    figure=(; size=(1200, 700), fontsize=24)
+)
+```
+
+These plots reveal the overall shape of the PD time-course and help identify:
+
+- Onset of effect (time to peak response)
+- Duration of effect (return to baseline)
+- Dose-response relationship (higher doses → larger effects)
+- Accumulation (Day 1 vs Day 6 profiles)
+
+#### Individual PD Variability
+
+Spaghetti plots reveal between-subject variability in PD response magnitude and time-course.
+
+```{julia}
+#| out-width: 100%
+#| label: fig-pd-spaghetti
+#| fig-cap: "Individual pharmacodynamic response trajectories (gray lines) overlaid with population mean (red line) for each dose level at steady state. Between-subject variability in both baseline response and drug-induced stimulation is evident. Subjects with higher baseline levels show proportionally greater absolute response increases, suggesting potential for covariate effects in PD modeling."
+# Prepare data for individual PD plots
+df_pd_individual = @chain wide_data begin
+    @rsubset begin
+        !ismissing(:PD_CONC)
+        :EVID == 0
+        :PROFDAY >= 6
+        :NOMTIME >= 0
+
+    end
+    dropmissing(:PD_CONC)
+end
+
+# Individual layers
+individual_pd_layer = data(df_pd_individual) *
+                      mapping(
+                          :PROFTIME => "Time (hours)",
+                          :PD_CONC => "PD Response (IU/L)";
+                          group=:ID => nonnumeric,
+                          #   row = :PROFDAY => nonnumeric,# => day_renamer, # with this the plots are empty
+                          layout=:DOSE => dose_renamer => "Dose"
+                      ) *
+                      visual(Lines; color=(:gray, 1.0), linewidth=0.7)
+
+# Mean overlay
+mean_pd_layer = data(df_pd_mean) *
+                mapping(
+                    :PD_time => "Time (hours)",
+                    :PD_mean => "PD Response (IU/L)";
+                    #        row = :PROFDAY => nonnumeric,# => day_renamer,# with this the plots are empty
+                    layout=:DOSE => dose_renamer => "Dose"
+                ) *
+                visual(Lines; color=:red, linewidth=4)
+
+draw(
+    individual_pd_layer + mean_pd_layer;
+    axis=(;
+        xlabel="Time (hours)",
+        ylabel="PD Response (IU/L)",
+        xticks=0:48:196,
+    ),
+    figure=(; title="Day 6 PD profiles", size=(1600, 1200), fontsize=28)
+)
+```
+
+The spaghetti plots clearly show:
+
+- Individual subject variability (gray lines)
+- The mean trend (red line)
+- Whether variability increases with dose or time
+- Outlier subjects with unusual PD responses
+
+### Exposure-Response Relationships
+
+#### Concentration-Response Correlation [DataFrame]
+
+A key pharmacometric question is: **How does PD response relate to drug concentration?** Since `wide_data` already has matched PK and PD observations, we can directly explore this relationship.
+
+**At Steady State (Day 6):**
+
+```{julia}
+#| out-width: 100%
+#| label: fig-er-scatter
+#| fig-cap: "Exposure-response relationship at steady state showing PD response plotted against PK concentration on a semi-logarithmic scale. Each point represents a matched PK-PD observation, colored by dose level. Monotonic increase in response with concentration suggests saturable stimulation mechanism. Overlap between dose groups at similar concentrations supports concentration-driven (rather than dose-driven) response."
+# Filter to steady state observations with both PK and PD
+df_er_ss = @chain wide_data begin
+    @rsubset begin
+        # :PROFDAY > 5
+        :NOMTIME >= 0
+        !ismissing(:CONC) && !ismissing(:PD_CONC)
+        :EVID == 0
+        :CONC > 0  # Exclude pre-dose samples
+    end
+end
+
+dose_renamer = renamer(map(d -> d => "$(Int(d)) mg", unique(df_er_ss.DOSE)))
+# Scatter plot with dose coloring
+plt_er_ss = draw(
+    data(df_er_ss) *
+    mapping(
+        :CONC => "PK Concentration (ng/mL)",
+        :PD_CONC => "PD Response (IU/L)";
+        color=:DOSE => dose_renamer => "Dose"
+    ) *
+    visual(Scatter, markersize=12, alpha=0.6);
+    axis=(;
+        xlabel="PK Concentration (ng/mL)",
+        ylabel="PD Response (IU/L)",
+        xscale=log10,
+        xtickformat=x -> string.(round.(x; digits=1)),
+        xticks=[1, 2, 5, 10, 20, 50, 100],
+    ),
+    legend=(; position=:bottom),
+    figure=(; size=(1000, 800), fontsize=24)
+)
+```
+
+This plot reveals:
+
+- Whether PD increases monotonically with concentration
+- Evidence of saturation (plateau at high concentrations)
+- Dose-proportionality of the exposure-response relationship
+
+**Binned Concentration-Response Analysis:**
+
+Binning concentrations and calculating mean PD response clarifies the central tendency obscured by individual variability.
+
+```{julia}
+#| out-width: 100%
+#| label: fig-er-binned
+#| fig-cap: "Exposure-response relationship with binned statistics. Individual observations (small colored points) are overlaid with concentration bin means (large black squares) and standard errors (black whiskers). Binned data clearly show steep sigmoid concentration-response curve characteristic of Emax models with Hill coefficient, supporting indirect response model structure with inhibition of kout."
+# Create concentration bins and calculate mean PD
+using Statistics
+
+# Define bins on log scale
+conc_bins = [0, 2, 5, 10, 20, 50, 100, 200]
+df_er_ss_binned = @chain df_er_ss begin
+    @rtransform :CONC_bin = findfirst(x -> :CONC < x, conc_bins[2:end])
+    @by :CONC_bin begin
+        :CONC_mean = mean(:CONC)
+        :PD_mean = mean(:PD_CONC)
+        :PD_sem = std(:PD_CONC) / sqrt(length(:PD_CONC))
+        :n = length(:PD_CONC)
+    end
+    @rsubset !ismissing(:CONC_bin)
+end
+
+# Add binned statistics to the plot
+plt_er_ss_binned = draw(
+    data(df_er_ss) *
+    mapping(
+        :CONC => "PK Concentration (ng/mL)",
+        :PD_CONC => "PD Response (IU/L)";
+        color=:DOSE => nonnumeric,# => dose_renamer => "Dose"
+    ) *
+    visual(Scatter, markersize=10, alpha=0.4) +
+    data(df_er_ss_binned) *
+    mapping(
+        :CONC_mean => "PK Concentration (ng/mL)",
+        :PD_mean => "PD Response (IU/L)"
+    ) *
+    visual(Scatter, color=:black, marker=:rect, markersize=16) +
+    data(df_er_ss_binned) *
+    mapping(
+        :CONC_mean => "PK Concentration (ng/mL)",
+        :PD_mean => "PD Response (IU/L)",
+        :PD_sem => "Standard Error"
+    ) *
+    visual(Errorbars, color=:black, linewidth=3, whiskerwidth=5);
+    axis=(;
+        xlabel="PK Concentration (ng/mL)",
+        ylabel="PD Response (IU/L)",
+        xscale=log10,
+        xtickformat=x -> string.(round.(x; digits=1)),
+        xticks=[1, 2, 5, 10, 20, 50, 100],
+    ),
+    legend=(; position=:bottom),
+    figure=(; size=(1000, 800), fontsize=24)
+)
+```
+
+**Temporal Stability of Exposure-Response:**
+
+Faceting by study day reveals whether the exposure-response relationship changes over time (tolerance or sensitization).
+
+```{julia}
+#| out-width: 100%
+#| label: fig-er-by-day
+#| fig-cap: "Exposure-response relationships stratified by study day. Each panel shows PD response versus PK concentration for a specific day of treatment. Consistent exposure-response relationship across days (no systematic panel-to-panel shift) indicates absence of tolerance or sensitization, supporting time-invariant PD parameters in subsequent modeling."
+# Filter to all days with PK and PD observations
+df_er_time = @chain wide_data begin
+    @rsubset begin
+        !ismissing(:CONC) && !ismissing(:PD_CONC)
+        :EVID == 0
+        :CONC > 0
+    end
+end
+day_renamer_pd = renamer(map(d -> d => "Day $(Int(d))", unique(df_er_time.PROFDAY)))
+plt_er_by_day = draw(
+    data(df_er_time) *
+    mapping(
+        :CONC => "PK Concentration (ng/mL)",
+        :PD_CONC => "PD Response (IU/L)";
+        color=:DOSE => dose_renamer => "Dose",
+        layout=:PROFDAY => day_renamer_pd => "Study Day"
+    ) *
+    visual(Scatter, markersize=10, alpha=0.6);
+    axis=(;
+        xlabel="PK Concentration (ng/mL)",
+        ylabel="PD Response (IU/L)",
+        xscale=log10,
+        xtickformat=x -> string.(round.(x; digits=1)),
+    ),
+    legend=(; position=:bottom),
+    figure=(; size=(1400, 600), fontsize=24)
+)
+```
+
+This faceted view helps identify:
+
+- Tolerance development (same concentration → less effect over time)
+- Sensitization (same concentration → more effect over time)
+- Time-invariant exposure-response (no change across days)
+
+#### Hysteresis Analysis
+
+Hysteresis plots reveal temporal delays between concentration and effect by plotting PD versus PK as time-ordered trajectories.
+
+**Interpreting Hysteresis Patterns:**
+
+- **Clockwise loops**: Effect lags concentration (equilibration delay to effect site)
+- **Counter-clockwise loops**: Effect precedes concentration (tolerance or indirect mechanism)
+- **Straight lines**: Rapid equilibration (direct response model appropriate)
+
+```{julia}
+#| out-width: 100%
+#| label: fig-er-hysteresis
+#| fig-cap: "Hysteresis plots showing PK-PD trajectories over time for individual subjects (subset shown). Each line traces one subject's time course through concentration-response space, colored by time. Hysteresis loops are evident, characteristic of the effect compartment delay and indirect response mechanisms. The combination of effect compartment (introducing time lag) and Kout inhibition creates pronounced hysteresis supporting the model structure."
+# Prepare data for hysteresis plots
+df_hysteresis = @chain wide_data begin
+    @rsubset begin
+        !ismissing(:CONC) && !ismissing(:PD_CONC)
+        :EVID == 0
+        #    :PROFDAY == 1  # Focus on steady state
+        :DOSE > 0
+    end
+    @orderby :ID :NOMTIME  # Ensure temporal ordering
+end
+
+# Create subject-specific trajectories with arrows
+# Note: For simplicity, we'll show a subset of subjects
+subject_subset = unique(df_hysteresis.ID)[1:20]
+
+plt_hysteresis = draw(
+    data(@rsubset(df_hysteresis, :ID ∈ subject_subset)) *
+    mapping(
+        :CONC => "PK Concentration (ng/mL)",
+        :PD_CONC => "PD Response (IU/L)";
+        color=:NOMTIME => "Time (hours)",
+        layout=:ID => renamer(map(d -> d => "ID: $(d)", subject_subset)),
+    ) *
+    visual(Lines, linewidth=2);
+    axis=(;
+        xlabel="PK Concentration (ng/mL)",
+        ylabel="PD Response (IU/L)",
+        xscale=log10,
+        xtickformat=x -> string.(round.(x; digits=1)),
+    ),
+    figure=(; size=(2000, 2000), fontsize=18)
+)
+```
+
+#### Covariate Effects on Exposure-Response
+
+We investigate whether demographic characteristics modify the exposure-response relationship, which would inform covariate inclusion in PD modeling.
+
+```{julia}
+#| out-width: 100%
+#| label: fig-er-by-sex
+#| fig-cap: "Exposure-response relationships stratified by sex. Separate panels for males and females enable comparison of both intercepts (baseline response) and slopes (drug sensitivity). Similar exposure-response relationships between sexes suggest sex may not be a significant PD covariate, though formal covariate testing in the population PD model is required for definitive conclusions."
+# Exposure-response stratified by sex
+df_er_sex = @chain wide_data begin
+    @rsubset begin
+        :PROFDAY > 1
+        !ismissing(:CONC) && !ismissing(:PD_CONC)
+        :EVID == 0
+        :CONC > 0
+        :DOSE > 0
+    end
+end
+
+plt_er_by_sex = draw(
+    data(df_er_sex) *
+    mapping(
+        :CONC => "PK Concentration (ng/mL)",
+        :PD_CONC => "PD Response (IU/L)";
+        color=:SEX => "Sex",
+        col=:SEX => "Sex"
+    ) *
+    visual(Scatter, markersize=12, alpha=0.6);
+    axis=(;
+        xlabel="PK Concentration (ng/mL)",
+        ylabel="PD Response (IU/L)",
+        xscale=log10,
+        xtickformat=x -> string.(round.(x; digits=1)),
+    ),
+    legend=(; position=:bottom),
+    figure=(; size=(1400, 600), fontsize=24)
+)
+```
+
+This analysis helps determine:
+
+- Whether males and females have different sensitivity (slope) to the drug
+- Whether baseline PD differs between sexes (intercept shift)
+- Whether covariate modeling will be necessary in subsequent PK-PD model development
+
+**Summary: Exploratory Data Analysis**
+
+In this section, we completed comprehensive visualization of PK and PD data:
+
+- Summary tables confirmed data quality and demographic balance
+- PK profiles revealed dose proportionality and accumulation patterns
+- PD profiles showed dose-dependent stimulation with reversible effects
+- Exposure-response analysis indicated saturable, time-invariant PD mechanism
+- Hysteresis patterns supported indirect response model structure with effect compartment
+
+---
+
+In this section, we've completed **Stages 1-2** of the workflow map:
+
+**Stage 1: Data Preparation**
+
+- ✓ Loaded data from CSV using `CSV.read()`
+- ✓ Created **a population type** for different analyses:
+  - **`population` / `population_placebo`**: `Population` objects using `read_pumas()` for NLME modeling
+
+**Stage 2: Exploratory Data Analysis**
+
+- ✓ Generated summary tables with `overview_table()` and `table_one()`
+- ✓ Visualized concentration-time profiles and covariate distributions
+
+Having explored the data visually and confirmed its quality, we begin quantitative analysis with non-compartmental methods. NCA provides model-independent exposure metrics that inform dose selection and serve as initial parameter estimates for subsequent population PK modeling.
+
+## A.3 Non-Compartmental Analysis {#sec-nca}
+
+### NCA Fundamentals
+
+Non-compartmental analysis estimates PK parameters without assuming a specific compartmental structure. Instead, it uses numerical integration (trapezoidal rule) and statistical moments to derive exposure metrics. Key advantages of NCA include:
+
+- **Model-independence**: No assumptions about compartments or absorption/elimination processes
+- **Speed**: Fast computation, suitable for large datasets
+- **Regulatory acceptance**: Widely used for bioequivalence and dose-proportionality studies
+- **Initial estimates**: Provides starting values for population PK models
+
+Common NCA parameters include:
+
+- **AUC** (Area Under the Curve): Total drug exposure
+- **Cmax**: Maximum observed concentration
+- **Tmax**: Time of maximum concentration
+- **t½**: Terminal elimination half-life
+- **CL/F**: Apparent clearance (dose/AUC)
+- **Vz/F**: Apparent volume of distribution
+
+For multiple-dose studies, we also assess:
+
+- **Accumulation ratio**: Ratio of steady-state to first-dose exposure
+- **Dose proportionality**: Linearity of exposure with increasing dose
+
+In the previous section, we already covered the the creation of a `NCAPopulation` and used that object to understand basic properties of the data such as profiles over day and across doses, extent of variability by visualizing spaghetti plots and finally accumulation from first dose to steady state via the group profiles over days across different doses. One thing that was noticed from the plots in the previous section was that rich concentration time profiles are only available on days 1 and 6 and the remaining days have only one sample. NCA is desirable over full profiles and hence we created an `NCAPopulation` using only `PROFDAY`s 1 and 6.
+
+Next we directly jump into computation of the NCA parameters.
+
+### Calculate NCA Parameters
+
+To calculate all standard NCA parameters, use `run_nca()`:
+
+```{julia}
+#| output: false
+nca_report = run_nca(population_nca)
+```
+
+This returns an `NCAReport` object containing:
+
+- **`reportdf`**: `DataFrame` with all calculated parameters for each subject
+- **Parameter-specific methods**: Access individual parameters like `nca_report.auc`, `nca_report.cmax`, etc.
+
+#### Viewing the Report
+
+```{julia}
+nca_report_df = DataFrame(nca_report.reportdf)
+first(nca_report_df, 10)
+```
+
+Common parameters in the report include:
+
+- **`lambdaz`**: Terminal elimination rate constant
+- **`half_life`**: Terminal half-life (t½)
+- **`tmax`**: Time of maximum concentration
+- **`cmax`**: Maximum concentration
+- **`auclast`**: AUC from time zero to last measurable concentration
+- **`aucinf_obs`**: AUC from time zero to infinity (observed)
+- **`vz_f_obs`**: Apparent volume of distribution (Vz/F)
+- **`cl_f_obs`**: Apparent clearance (CL/F)
+
+::: {.callout-tip}
+### Selecting Specific Parameters
+
+You can specify which parameters to calculate:
+
+```{julia}
+#| output: false
+nca_report_custom = run_nca(
+    population_nca;
+    parameters=["aucinf_obs", "auclast", "cmax", "tmax", "half_life"]
+)
+```
+
+See the [Pumas NCA documentation](https://docs.pumas.ai/stable/nca/ncafunctions/) for the full list of available parameters.
+:::
+
+### Assess Dose Proportionality
+
+Dose proportionality analysis evaluates whether exposure increases linearly with dose. We use dose-normalized AUC and Cmax as primary metrics.
+
+#### Visualizing Dose Proportionality
+
+If PK is dose-proportional, dose-normalized AUC and Cmax should be independent of dose (i.e., constant across dose levels).
+
+```{julia}
+#| out-width: 100%
+#| label: fig-dose-proportionality
+#| fig-cap: "Dose proportionality assessment using dose-normalized exposure metrics. Top panel shows dose-normalized AUC₀₋∞, bottom panel shows dose-normalized Cmax, both stratified by study day. Violin plots display distribution of normalized values across subjects at each dose level. Approximately constant normalized values across doses (flat distributions) indicate dose-proportional pharmacokinetics. Median shown as horizontal line within each violin."
+using AlgebraOfGraphics, CairoMakie
+# Extract AUC and Cmax from NCA report, removing missing values
+nca_summary = @select nca_report_df :id :PROFDAY :DOSE :cmax_dn :aucinf_dn_obs
+dropmissing!(nca_summary)
+
+fig_dose_prop = Figure(; size=(800, 800))
+
+day_renamer = renamer(map(d -> d => "Day $(Int(d))", unique(nca_summary.PROFDAY)))
+# AUC vs Dose
+plt_auc_dose = data(nca_summary) *
+               mapping(:DOSE => nonnumeric, :aucinf_dn_obs;
+                   layout=:PROFDAY => day_renamer) *
+               visual(Violin; show_median=true)
+
+draw!(
+    fig_dose_prop[1, 1],
+    plt_auc_dose;
+    axis=(;
+        xlabel="Dose (mg)",
+        ylabel="Dose-Normalized AUC₀₋∞ (ng·hr/mL/mg)",
+        #title = "AUC Dose Proportionality",
+    ),
+)
+
+# Cmax vs Dose
+plt_cmax_dose = data(nca_summary) *
+                mapping(:DOSE => nonnumeric, :cmax_dn;
+                    layout=:PROFDAY => day_renamer) *
+                visual(Violin; show_median=true)
+
+draw!(
+    fig_dose_prop[2, 1],
+    plt_cmax_dose;
+    axis=(;
+        xlabel="Dose (mg)",
+        ylabel="Dose-Normalized Cmax (ng/mL/mg)",
+        # title = "Cmax Dose Proportionality",
+    ),
+)
+
+fig_dose_prop
+```
+
+**Interpretation:**
+
+- **Flat distributions across doses**: Dose-proportional PK
+- **Increasing trend**: Less than dose-proportional (possibly saturable absorption or increased clearance)
+- **Decreasing trend**: More than dose-proportional (possibly saturable clearance)
+
+#### Statistical Assessment of Dose Proportionality
+
+For formal statistical testing, the **power model** is commonly used:
+
+**log(Parameter) ~ log(α) + β * log(Dose)**
+
+Where:
+
+- **β = 1**: Dose-proportional
+- **β < 1**: Less than dose-proportional
+- **β > 1**: More than dose-proportional
+
+This analysis is typically performed using linear regression on log-transformed data. Below is the example just on `cmax`.
+
+```{julia}
+dp_cmax = NCA.DoseLinearityPowerModel(nca_report, :cmax)
+```
+
+Here’s a visualization for the dose linearity using a power model for `cmax`
+
+```{julia}
+power_model(dp_cmax; legend=(; position=:bottom))
+```
+
+### Summary: Non-Compartmental Analysis
+
+In this section, we demonstrated NCA workflows for multiple ascending dose studies:
+
+**NCA Population Creation (ⓐ)**
+
+- Used `read_nca()` to create `NCAPopulation` objects
+- Grouped by dose level and covariates for stratified analysis
+
+**Dose-Normalized Concentration Analysis**
+
+- Visualized profiles to assess dose linearity
+- Compared first dose vs. steady state
+
+**Parameter Calculation (ⓐ)**
+
+- Used `run_nca()` for comprehensive NCA reports
+
+**Dose Proportionality Assessment**
+
+- Evaluated dose-normalized AUC and Cmax across dose levels
+- Used violin plots to visualize variability and trends
+- Performed statistical assessment of dose proportionality
+
+NCA provides rapid, model-independent PK characterization and can inform:
+
+1. **Dose selection** for later-stage studies
+2. **Initial parameter estimates** for population PK models (next section)
+3. **Regulatory submissions** (bioequivalence, dose proportionality)
+4. **Early decision-making** in drug development
+
+---
+
+## A.4 Population Pharmacokinetic Modeling {#sec-pop-pk}
+
+Having characterized exposure metrics via NCA, we now build mechanistic compartmental models to describe concentration-time data. This section demonstrates the complete model development workflow: base model fitting, diagnostics, model comparison, random effect refinement, covariate selection, and parameter uncertainty quantification.
+
+::: {.callout-note}
+## 🗺️ Modeling Journey (Stages 4-8)
+
+This section covers multiple workflow stages:
+
+- **Stage 4**: Base model specification
+- **Stage 5**: Model fitting and initial diagnostics
+- **Stage 6**: Model comparison and refinement
+- **Stage 7**: Covariate modeling
+- **Stage 8**: Final model validation
+
+Each stage builds on the previous, demonstrating iterative model development.
+:::
+
+### One-Compartment Base Model
+
+#### Define Model Structure
+
+#### One-Compartment Oral Model
+
+```{julia}
+oral_model = @model begin
+    @metadata begin
+        desc = "One-compartment oral absorption model"
+        timeu = u"hr" # hour
+    end
+
+    @param begin
+        θka ∈ RealDomain(lower=0.1, init=0.4)
+        θcl ∈ RealDomain(lower=0.1, init=7.3)
+        θvc ∈ RealDomain(lower=1.0, upper=500, init=93.0)
+
+        Ω_pk ∈ PDiagDomain(3)
+
+        σ_add_pk ∈ RealDomain(lower=0.0, init=1.0^2)
+        σ_prop_pk ∈ RealDomain(lower=0.0, init=0.09^2)
+    end
+
+    @random begin
+        η ~ MvNormal(Ω_pk)
+    end
+
+    @pre begin
+        ηka, ηcl, ηvc = η
+        Ka = θka * exp(ηka)
+        CL = θcl * exp(ηcl)
+        Vc = θvc * exp(ηvc)
+    end
+
+    @dynamics Depots1Central1
+
+    @derived begin
+        ipred := @. Central / Vc
+        CONC ~ @. Normal(ipred, sqrt(σ_add_pk^2 + (ipred * σ_prop_pk)^2))
+    end
+end
+```
+
+#### Specify Initial Parameter Estimates
+
+We use NCA-derived values to inform initial estimates for clearance and volume parameters.
+
+```{julia}
+initial_est_oral_model = (
+    θka=0.9,
+    θcl=4.3,
+    θvc=252.0,
+    Ω_pk=Diagonal([0.1, 0.1, 0.1]),
+    σ_add_pk=sqrt(0.09),
+    σ_prop_pk=sqrt(0.01),
+)
+```
+
+#### Validate Initial Parameters
+
+Before fitting, we validate that initial parameters yield reasonable log-likelihood and that no subjects are highly influential.
+
+```{julia}
+foce_loglikelihood = loglikelihood(oral_model, population, initial_est_oral_model, FOCE())
+```
+
+```{julia}
+foce_fi = findinfluential(oral_model, population, initial_est_oral_model, FOCE())
+```
+
+#### Prior Predictive Check
+
+Simulate from the model using initial parameters to verify they generate plausible concentration profiles before fitting.
+
+```{julia}
+pre_fit_sim = simobs(oral_model, population, initial_est_oral_model; rng)
+```
+
+```{julia}
+#| out-width: 100%
+#| label: fig-pk-prior-check
+#| fig-cap: "Prior predictive check showing simulated concentration-time profiles (gray lines) using initial parameter estimates before model fitting. This visualization verifies that starting values generate physiologically plausible profiles. Substantial mismatch would indicate need to revise initial estimates before attempting parameter estimation."
+using PumasUtilities
+using CairoMakie
+sim_plot(pre_fit_sim,
+    color=(:grey, 0.5),
+    linewidth=0.5,
+    markercolor=(:black, 0.5),
+    axis=(yscale=Makie.pseudolog10,
+        xlabel="Time (hours)",
+        ylabel="Mean Concentration (ng/mL)",
+        xticks=0:24:240),
+    legend=(; position=:bottom))
+```
+
+#### Fit Model Using Progressive Estimation
+
+We use a two-stage approach: first fit using NaivePooled (fast) to get stable fixed effects, then refine with FOCE for full population model.
+
+```{julia}
+np_fit = fit(
+    oral_model,
+    population,
+    (; initial_est_oral_model..., Ω_pk=Diagonal([0.0, 0.0, 0.0])),
+    NaivePooled();
+    constantcoef=(:Ω_pk,),
+    optim_options=(; show_trace=false), verbose=false,
+)
+```
+
+```{julia}
+foce_fit = fit(
+    oral_model,
+    population,
+    (; coef(np_fit)..., Ω_pk=initial_est_oral_model.Ω_pk),
+    FOCE();
+    optim_options=(; show_trace=false), verbose=false,
+)
+```
+
+### Model Diagnostics
+
+With the base model fitted, we compute comprehensive diagnostics to assess goodness-of-fit, identify systematic biases, and evaluate model adequacy.
+
+#### Compute Diagnostic Metrics
+
+```{julia}
+#| output: false
+foce_inspect = inspect(foce_fit)
+```
+
+The resulting `PumasInspect` object contains:
+- **PRED**: Population predictions (using population parameters only)
+- **IPRED**: Individual predictions (using individual parameters with EBEs)
+- **WRES/CWRES**: (Conditional) weighted residuals
+- **EBEs**: Individual random effect estimates (η values)
+
+#### Standard Goodness-of-Fit Panel
+
+Pumas provides several pre-defined diagnostic plots covering the most common goodness-of-fit evaluations.
+
+```{julia}
+#| out-width: 100%
+#| label: fig-gof-1cmt
+#| fig-cap: "Standard goodness-of-fit diagnostics for one-compartment model. Four-panel display includes: (1) observations vs population predictions assessing population-level bias, (2) observations vs individual predictions assessing individual-level fit, (3) conditional weighted residuals vs predictions checking for heteroscedasticity, and (4) conditional weighted residuals vs time after dose identifying time-dependent patterns. Systematic deviations indicate model misspecification."
+goodness_of_fit(foce_inspect;
+    observations=[:CONC],
+    markercolor=(:grey, 0.5),
+    legend=(
+        position=:bottom,
+        framevisible=false,
+        labelsize=18,
+        patchsize=(20, 10),
+    ),
+    figure=(size=(800, 800), fontsize=18))
+```
+
+This plot shows:
+- Observations vs. population predictions (OBS vs. PRED)
+- Observations vs. individual predictions (OBS vs. IPRED)
+- Conditional weighted residuals vs. predictions (CWRES vs. PRED)
+- Conditional weighted residuals vs. time after dose (CWRES vs. TAD)
+
+From these plots, we can assess bias, heteroscedasticity, and systematic trends in residuals.
+
+#### Focused Diagnostic Plots
+
+For detailed examination of specific diagnostic aspects, individual plotting functions provide focused views.
+
+```{julia}
+#| output: false
+pk_diagnostics_kwargs = (observations=[:CONC],
+    markercolor=(:grey, 0.5),
+    legend=(
+        position=:bottom,
+        framevisible=false,
+        labelsize=13,
+        patchsize=(20, 10),))
+```
+
+```{julia}
+#| out-width: 100%
+#| label: fig-obs-vs-pred-1cmt
+#| fig-cap: "Observations versus population predictions for one-compartment model. Identity line (dashed) represents perfect agreement. Systematic deviation from identity indicates population-level bias in model structure or parameter values."
+observations_vs_predictions(foce_inspect; pk_diagnostics_kwargs...)
+```
+
+```{julia}
+#| out-width: 100%
+#| label: fig-obs-vs-ipred-1cmt
+#| fig-cap: "Observations versus individual predictions incorporating empirical Bayes estimates. Closer agreement with identity line compared to population predictions indicates that random effects successfully capture between-subject variability."
+observations_vs_ipredictions(foce_inspect; pk_diagnostics_kwargs...)
+```
+
+```{julia}
+#| out-width: 100%
+#| label: fig-wres-vs-time-1cmt
+#| fig-cap: "Conditional weighted residuals versus time after dose. Random scatter around zero indicates adequate model fit. Systematic trends (e.g., residuals consistently positive at early times) suggest structural misspecification such as incorrect absorption or distribution kinetics."
+wresiduals_vs_time(foce_inspect; pk_diagnostics_kwargs...)
+```
+
+Each function produces focused plots for specific diagnostics. Additional diagnostic functions like `wresiduals_vs_predictions()` and `observations_vs_ipredictions()` are detailed in Appendix XXX[C]XXX.
+
+#### Individual Subject Fits
+
+Visualize model fit for each subject to identify outliers and assess individual-level performance.
+
+```{julia}
+#| out-width: 100%
+#| label: fig-subject-fits-1cmt
+#| fig-cap: "Individual subject concentration-time profiles with model fits. Observed concentrations (points) overlaid with individual predictions (lines) derived from empirical Bayes estimates. Each panel represents one subject. Systematic mismatch in specific subjects may indicate outliers or covariate effects. Only first page of paginated output shown."
+all_subject_fits = subject_fits(foce_inspect;  pk_diagnostics_kwargs..., paginate = true, separate = true,)
+all_subject_fits[4]
+```
+
+This generates individual concentration-time plots overlaying observed data with individual predictions. The `paginate = true` option splits subjects across multiple pages, and `separate = true` gives each subject its own panel.
+
+#### Visual Predictive Check
+
+VPC is a simulation-based diagnostic comparing observed data quantiles to model-predicted quantile intervals. Agreement indicates adequate model predictive performance.
+
+```{julia}
+foce_vpc = vpc(foce_fit; 
+               covariates = [:tad],)
+```
+
+The `covariates = [:tad]` argument bins observations by time after dose. The `vpc()` function simulates many replicates of the dataset and computes prediction intervals for the 5th, 50th, and 95th percentiles.
+
+```{julia}
+#| out-width: 100%
+#| label: fig-vpc-1cmt  
+#| fig-cap: "Visual predictive check for one-compartment model. Observed data 5th, 50th, and 95th percentiles (solid lines with points) are overlaid on model-predicted percentile intervals (shaded bands). Observations falling outside prediction intervals indicate model misspecification. Systematic deviations in distribution phase suggest need for multi-compartment structure."
+plt_vpc = vpc_plot(foce_vpc,
+    observations=true,
+    markercolor=:grey,
+    observed_linewidth=4,
+    figurelegend=(position=:b, 
+                  alignmode=Outside(), 
+                  orientation=:horizontal, 
+                  nbanks=3),
+    markersize=12,
+    axis=(yscale=Makie.pseudolog10,
+        xticks = 0:8:120,
+        yticks = 0:20:120,
+        ylabel="Concentration (ng/mL)",
+        xlabel="Time (hours)",
+        spinewidth=4,
+        rightspinevisible=false,
+        topspinevisible=false),
+    figure=(size=(1800, 1400), fontsize=40))
+plt_vpc
+```
+
+The plot shows observed quantiles (lines/points) overlaid on simulated quantile prediction intervals (shaded regions). Deviations between observed and simulated quantiles indicate areas where the model may not adequately describe the data.
+
+### Two-Compartment Model Development
+
+Diagnostic plots from the one-compartment model reveal systematic misfit in the distribution phase (early time points show under-prediction). This motivates exploration of a two-compartment structure.
+
+#### Define Two-Compartment Model
+
+The two-compartment model adds a peripheral compartment, requiring two additional parameters: inter-compartmental clearance (Q) and peripheral volume (Vp). The closed-form solution is `Depots1Central1Periph1`.
+
+```{julia}
+oral_model_2cmt = @model begin
+    @metadata begin
+        desc = "Two-compartment oral absorption model"
+        timeu = u"hr"
+    end
+
+    @param begin
+        θka ∈ RealDomain(lower = 0.01, init = 1.0)
+        θcl ∈ RealDomain(lower = 0.01, init = 1.0)
+        θvc ∈ RealDomain(lower = 0.01, upper = 190.0, init = 10.0)
+        θq ∈ RealDomain(lower = 0.01, upper = 90.0, init = 10.0)
+        θvp ∈ RealDomain(lower = 0.01, upper = 190.0, init = 10.0)
+
+        Ω_pk ∈ PDiagDomain(5)
+
+        σ_add_pk ∈ RealDomain(lower = 0.0, init = 1.0^2)
+        σ_prop_pk ∈ RealDomain(lower = 0.0, init = 0.09^2)
+    end
+
+    @random begin
+        η ~ MvNormal(Ω_pk)
+    end
+
+    @pre begin
+       ηka, ηcl , ηvc, ηq, ηvp = η
+        
+        Ka = θka * exp(ηka)
+        CL = θcl * exp(ηcl)
+        Vc = θvc * exp(ηvc)
+        Q = θq   * exp(ηq)
+        Vp = θvp * exp(ηvp)
+    end
+
+    @dynamics Depots1Central1Periph1
+
+    @derived begin
+        ipred := @. Central / Vc
+        CONC ~ @. Normal(ipred, sqrt(σ_add_pk^2 + (ipred * σ_prop_pk)^2))
+    end
+end
+```
+
+#### Fit Two-Compartment Model
+
+We initialize parameters using one-compartment estimates where applicable and add reasonable starting values for the new Q and Vp parameters.
+
+```{julia}
+initial_est_oral_model_2cmt = (
+    coef(foce_fit)...,
+    θq = 0.9,
+    θvp = 0.9,
+    Ω_pk = Diagonal([0.1, 0.1, 0.1, 0.1, 0.1]),
+)
+foce_loglikelihood = loglikelihood(
+    oral_model_2cmt,
+    population,
+    initial_est_oral_model_2cmt,
+    FOCE()
+)
+```
+
+Fit using FOCE and existing parameters set to previous fitted values:
+```{julia}
+#| output: false
+foce_fit_2cmt = fit(
+    oral_model_2cmt,
+    population,
+    initial_est_oral_model_2cmt, 
+    FOCE();
+    optim_options = (; show_trace = false), verbose=false,
+)
+```
+
+#### Evaluate Two-Compartment Model
+
+Compute diagnostics and compare to one-compartment model to assess improvement.
+
+```{julia}
+#| output: false
+foce_inspect_2cmt = inspect(foce_fit_2cmt)
+```
+
+```{julia}
+#| out-width: 100%
+#| label: fig-gof-2cmt
+#| fig-cap: "Goodness-of-fit diagnostics for two-compartment model. Comparison with one-compartment diagnostics (@fig-gof-1cmt) should show reduced systematic deviations, particularly at early time points where distribution phase is prominent. Improved alignment of observations with predictions indicates superior model structure."
+goodness_of_fit(foce_inspect_2cmt; 
+                observations = [:CONC], 
+                markercolor = (:grey, 0.5), 
+                legend = (position = :bottom,
+                        framevisible = false,
+                        labelsize = 18,
+                        patchsize = (20, 10),
+                        ),
+                figure = (size = (800, 800), fontsize = 18)
+)
+```
+
+The diagnostics should show improved fit compared to the one-compartment model, particularly in the distribution phase.
+
+#### Compare Model Performance
+
+Formal model comparison using parameter estimates and information criteria.
+
+```{julia}
+#| out-width: 100%
+#| label: tbl-param-comparison
+#| tbl-cap: "Parameter estimate comparison between one-compartment and two-compartment models. Standard errors, relative standard errors, and confidence intervals provided for each parameter. Addition of peripheral compartment (Q, Vp) should improve model fit with acceptable increase in parameter uncertainty."
+compare_estimates(one_compartment = foce_fit, two_compartment = foce_fit_2cmt)
+```
+
+and the `metrics_table()` function can be used to compare model performance metrics such as AIC and BIC.
+
+```{julia}
+#| out-width: 100%
+#| label: tbl-model-comparison-1cmt-2cmt
+#| tbl-cap: "Model comparison metrics for one-compartment versus two-compartment structures. Lower AIC and BIC values indicate superior model with penalty for additional parameters. Substantial improvement in log-likelihood should outweigh parameter complexity penalty."
+@chain begin
+    leftjoin(metrics_table(foce_fit),
+         metrics_table(foce_fit_2cmt), on = :Metric, makeunique=true)
+    rename(:Value => :One_Compartment,
+           :Value_1 => :Two_Compartment)
+end
+```
+
+#### VPC for Two-Compartment Model
+
+```{julia}
+foce_vpc_2cmt = vpc(foce_fit_2cmt; 
+               covariates = [:tad],
+               ensemblealg = EnsembleThreads())
+```
+
+```{julia}
+#| out-width: 100%
+#| label: fig-vpc-2cmt
+#| fig-cap: "Visual predictive check for two-compartment model. Observed percentiles should show improved alignment with prediction intervals compared to one-compartment VPC (@fig-vpc-1cmt), particularly in the distribution phase (early time points). Adequate coverage of observed data by prediction bands indicates satisfactory model predictive performance."
+plt_vpc_2cmt = vpc_plot(foce_vpc_2cmt,
+    observations=true,
+    markercolor=:grey,
+    observed_linewidth=4,
+    figurelegend=(position=:b, 
+                  alignmode=Outside(), 
+                  orientation=:horizontal, 
+                  nbanks=3),
+    markersize=12,
+    axis=(yscale=Makie.pseudolog10,
+        xticks = 0:8:120,
+        yticks = 0:20:120,
+        ylabel="Concentration (ng/mL)",
+        xlabel="Time (hours)",
+        spinewidth=4,
+        rightspinevisible=false,
+        topspinevisible=false),
+    figure=(size=(1800, 1400), fontsize=40))
+plt_vpc_2cmt
+```
+
+### Random Effect Structure Refinement
+
+With satisfactory structural model identified (two-compartment), we evaluate random effect necessity. Diagnostics suggest minimal between-subject variability in Ka, motivating a simplified random effect structure.
+
+```{julia}
+oral_model_2cmt_noka = @model begin
+    @metadata begin
+        desc = "Two-compartment oral model without Ka random effect"
+        timeu = u"hr"
+    end
+
+    @param begin
+        θka ∈ RealDomain(lower = 0.01, init = 1.0)
+        θcl ∈ RealDomain(lower = 0.01, init = 1.0)
+        θvc ∈ RealDomain(lower = 0.01, upper = 190.0, init = 10.0)
+        θq ∈ RealDomain(lower = 0.01, upper = 90.0, init = 10.0)
+        θvp ∈ RealDomain(lower = 0.01, upper = 190.0, init = 10.0)
+
+        Ω_pk ∈ PDiagDomain(4)  # Now 4 instead of 5
+
+        σ_add_pk ∈ RealDomain(lower = 0.0, init = 1.0^2)
+        σ_prop_pk ∈ RealDomain(lower = 0.0, init = 0.09^2)
+    end
+
+    @random begin
+        η ~ MvNormal(Ω_pk)
+    end
+
+    @pre begin
+        ηcl , ηvc, ηq, ηvp = η  # Only 4 random effects now
+        Ka = θka  # No random effect
+        CL = θcl * exp(ηcl)
+        Vc = θvc * exp(ηvc)
+        Q = θq * exp(ηq)
+        Vp = θvp * exp(ηvp)
+    end
+
+    @dynamics Depots1Central1Periph1
+
+    @derived begin
+        ipred := @. Central / Vc
+        CONC ~ @. Normal(ipred, sqrt(σ_add_pk^2 + (ipred * σ_prop_pk)^2))
+    end
+end
+```
+
+Fit the model:
+
+```{julia}
+#| output: false
+foce_noka = fit(
+    oral_model_2cmt_noka,
+    population,
+    (coef(foce_fit_2cmt)..., Ω_pk = Diagonal([0.1, 0.1, 0.1, 0.1])),
+    FOCE();
+    optim_options = (; show_trace = false), verbose=false,
+)
+```
+
+To compare parameter estimates between models, use `compare_estimates()`:
+
+```{julia}
+compare_estimates(with_ka = foce_fit_2cmt, without_ka = foce_noka)
+```
+
+This produces a side-by-side table of parameter estimates, making it easy to see how removing the Ka random effect impacts other parameters.
+
+For model selection, use information criteria:
+
+```{julia}
+bic_ka, bic_noka = bic(foce_fit_2cmt), bic(foce_noka)
+```
+
+```{julia}
+ll_ka, ll_noka = loglikelihood(foce_fit_2cmt), loglikelihood(foce_noka)
+```
+
+Lower BIC indicates better model fit penalized for complexity. If BIC improves (decreases) when removing the Ka random effect, the simpler model is preferred.
+
+::: {.callout-note}
+#### Model Selection Criteria (ⓐ)
+
+- **AIC (Akaike Information Criterion)**: Penalizes additional parameters less aggressively than BIC
+- **BIC (Bayesian Information Criterion)**: Penalizes additional parameters based on sample size
+- **Log-Likelihood Ratio Test**: For nested models, compute LRT = -2 × (LL<sub>reduced</sub> - LL<sub>full</sub>), which follows a χ² distribution with degrees of freedom equal to the difference in number of parameters
+:::
+
+### Covariate Modeling
+
+With structural and random effect models established, we investigate covariate relationships to explain residual between-subject variability and enable population extrapolation.
+
+#### Identify Candidate Covariates
+
+```{julia}
+#| output: false
+foce_inspect_2cmt_noka = inspect(foce_noka)
+```
+
+#### Diagnosing Covariates Based on Empirical Bayes Estimates (✓)
+
+The `empirical_bayes_vs_covariates()` function plots EBEs (individual random effects) against available covariates:
+
+```{julia}
+#| out-width: 100%
+#| label: fig-ebe-vs-covariates-base
+#| fig-cap: "Empirical Bayes estimates (individual random effects) plotted against available covariates (body weight, sex, dose level) to identify potential covariate relationships. Trends or correlations suggest covariates may explain between-subject variability currently captured by random effects. Weight shows positive correlation with Vc random effects; sex may influence CL random effects. These patterns guide covariate model development."
+empirical_bayes_vs_covariates(foce_inspect_2cmt_noka; 
+                              covariates = [:WEIGHTB, :SEX, :DOSE],
+                              categorical = [:SEX, :DOSE],
+                              color = (:grey, 0.5))
+```
+
+If EBEs show trends or correlations with covariates, it suggests the covariate may explain some of the unexplained variability currently captured by random effects. This guides covariate selection.
+
+#### Covariate Implementation Strategies
+
+Covariate models should be coded such that setting the covariate parameter to zero (or a neutral value) removes the covariate effect. This makes model comparison straightforward.
+
+##### Categorical Covariates (✓)
+
+For categorical covariates (e.g., sex), we use conditional logic to apply different parameter values to different categories. Consider an effect of sex on clearance:
+
+**Using if-elseif-else blocks:**
+
+```{.julia}
+@pre begin
+    COVsexCL = if SEX == "Female"
+        1 + θsexCLF  # Effect for females
+    elseif SEX == "Male"
+        1            # Reference (no effect)
+    else
+        error("Expected SEX to be either \"Female\" or \"Male\" but the value was: $SEX")
+    end
+
+    CL = θcl * exp(η[1]) * COVsexCL
+    Vc = θvc * exp(η[2])
+end
+```
+
+**Using ternary expressions (more concise):**
+
+```{.julia}
+@pre begin
+    COVsexCL =
+        SEX == "Female" ? 1 + θsexCLF :
+        (SEX == "Male" ? 1 :
+         error("Expected SEX to be either \"Female\" or \"Male\" but the value was: $SEX"))
+
+    CL = θcl * exp(η[1]) * COVsexCL
+    Vc = θvc * exp(η[2])
+end
+```
+
+In this parameterization, `θsexCLF = 0` means no sex effect. A positive value increases clearance in females relative to males.
+
+##### Continuous Covariates (✓)
+
+For continuous covariates (e.g., weight), we typically use power models centered at a reference value:
+
+```{.julia}
+@pre begin
+    # Effect of body weight on Vc
+    COVwtVc = (WEIGHTB / 70)^θvcWEIGHTB
+
+    CL = θcl * exp(η[1])
+    Vc = θvc * exp(η[2]) * COVwtVc
+end
+```
+
+Here, `θvcWEIGHTB = 0` removes the weight effect (since (WEIGHTB/70)^0 = 1). A value of 1 corresponds to allometric scaling (Vc ∝ weight).
+
+#### Covariate Model Example
+
+Based on EBE diagnostics showing relationships between sex and CL, and between weight and Vc, we build a covariate model:
+
+```{julia}
+mdl_cov = @model begin
+    @metadata begin
+        desc = "Two-compartment model with covariates"
+        timeu = u"hr"
+    end
+
+    @param begin
+        θka ∈ RealDomain(lower = 0.01, init = 1.0)
+        θcl ∈ RealDomain(lower = 0.01, init = 1.0)
+        θvc ∈ RealDomain(lower = 0.01, upper = 190.0, init = 10.0)
+        θq ∈ RealDomain(lower = 0.01, upper = 90.0, init = 10.0)
+        θvp ∈ RealDomain(lower = 0.01, upper = 190.0, init = 10.0)
+
+        θsexCLF ∈ RealDomain(lower = -10.0, upper = 10.0, init = 1.0)
+        θvcWEIGHTB ∈ RealDomain(lower = 0.1, upper = 10.0, init = 1.0)
+
+        Ω_pk ∈ PDiagDomain(4)
+
+        σ_add_pk ∈ RealDomain(lower = 0.0, init = 1.0^2)
+        σ_prop_pk ∈ RealDomain(lower = 0.0, init = 0.09^2)
+    end
+
+    @covariates SEX WEIGHTB
+
+    @random begin
+        η ~ MvNormal(Ω_pk)
+    end
+
+    @pre begin
+        ηcl , ηvc, ηq, ηvp = η
+        Ka = θka
+
+        COVsexCL =
+            SEX == "Female" ? 1 + θsexCLF :
+            (SEX == "Male" ? 1 :
+             error("Expected SEX to be either \"Female\" or \"Male\" but the value was: $SEX"))
+
+        CL = θcl * COVsexCL * exp(ηcl)
+        Vc = θvc * (WEIGHTB/77)^θvcWEIGHTB * exp(ηvc)
+        Q = θq * exp(ηq)
+        Vp = θvp * exp(ηvp)
+    end
+
+    @dynamics Depots1Central1Periph1
+
+    @derived begin
+        ipred := @. Central / Vc
+        CONC ~ @. Normal(ipred, sqrt(σ_add_pk^2 + (ipred * σ_prop_pk)^2))
+    end
+end
+```
+
+Note the `@covariates` declaration specifying which covariates the model uses.
+
+#### Fitting the Covariate Model
+
+Validate initial parameters:
+
+```{julia}
+initial_cov = (;
+    coef(foce_noka)...,
+    θsexCLF = 0.1,
+    θvcWEIGHTB = 1.0,
+)
+foce_loglikelihood = loglikelihood(mdl_cov, population, initial_cov, FOCE())
+```
+
+We reuse parameters from the base model (`foce_noka`) and add neutral initial values for covariate effects. This approach minimizes disruption to the parameter space—covariate effects start small and are estimated from data.
+
+::: {.callout-tip}
+#### Choosing Initial Covariate Values
+
+When introducing covariates, set their initial values to "neutral" (zero for additive effects, one for multiplicative effects). This ensures that fixed effect parameters from the base model remain approximately valid. If you set a covariate parameter to a large initial value, you may need to adjust the corresponding fixed effect parameter to compensate.
+:::
+
+Fit the model:
+
+```{julia}
+#| output: false
+oral_model_covar_results = fit(
+    mdl_cov,
+    population,
+    initial_cov,
+    Pumas.FOCE();
+    optim_options = (show_trace = false,),
+)
+```
+
+#### Evaluating the Covariate Model
+
+Compare estimates:
+
+```{julia}
+#| out-width: 100%
+#| label: tbl-covariate-comparison
+#| tbl-cap: "Parameter estimate comparison between base model (foce_noka) and covariate model (oral_model_covar_results). Addition of sex effect on CL and weight effect on Vc reduces random effect variances (Ω), indicating successful explanation of between-subject variability. Fixed effect estimates may shift as covariate effects absorb variability."
+compare_estimates(;foce_noka, oral_model_covar_results)
+```
+
+We expect to see:
+- Fixed effect estimates may change slightly (e.g., `θcl` adjusts as sex effect is introduced)
+- Random effect variances (Ω) should decrease if covariates successfully explain variability
+- Covariate parameters (`θsexCLF`, `θvcWEIGHTB`) with confidence intervals not including neutral values indicate significant effects
+
+Diagnostics:
+
+```{julia}
+#| output: false
+oral_model_covar_inspect = inspect(oral_model_covar_results)
+```
+
+Indeed, we see the expected change in parameter estimates
+```{julia}
+#| out-width: 100%
+#| label: tbl-covariate-estimates
+#| tbl-cap: "Parameter estimates with standard errors and 95% confidence intervals for covariate model. Covariate parameters (θsexCLF for sex effect on clearance, θvcWEIGHTB for weight effect on volume) with confidence intervals excluding neutral values indicate statistically significant covariate relationships."
+coeftable(oral_model_covar_results)
+```
+and in the plot of empirical bayes estimates against covariates
+```{julia}
+#| out-width: 100%
+#| label: fig-ebe-vs-covariates-final
+#| fig-cap: "Empirical Bayes estimates versus covariates after covariate model implementation. Trends observed in base model (fig-ebe-vs-covariates-base) are substantially reduced, confirming that sex and weight covariates successfully explain previously unexplained between-subject variability. Residual random effects show minimal correlation with covariates."
+empirical_bayes_vs_covariates(oral_model_covar_inspect; 
+                              covariates = [:WEIGHTB, :SEX, :DOSE],
+                              categorical = [:SEX, :DOSE],
+                              color = (:grey, 0.5))
+```
+
+After including covariates, the EBE vs. covariate plots should show reduced trends, indicating that covariates have successfully explained variability previously captured by random effects.
+
+::: {.callout-note}
+## Automatic Covariate Selection (→)
+
+Pumas supports automated covariate selection via `covariate_select()`. This function performs stepwise forward/backward selection. However, automatic covariate selection is computationally expensive and requires a stable base model. It should be used judiciously and results should be validated with clinical and physiological knowledge. Full details are in the documentation at docs.pumas.ai.
+:::
+
+## A.10 Parameter Uncertainty Quantification {#sec-uncertainty}
+
+Before finalizing our PK model, we quantify parameter uncertainty. This is essential for assessing statistical significance, evaluating model stability, and propagating uncertainty to simulations. This corresponds to **Stages 9-10** in the workflow map.
+
+#### Standard Errors via Sandwich Estimator
+
+The `infer()` function computes asymptotic standard errors using the sandwich estimator:
+
+```{julia}
+#| out-width: 100%
+#| label: tbl-parameter-inference
+#| tbl-cap: "Parameter estimates with asymptotic standard errors, 95% confidence intervals, and relative standard errors (RSE%) computed using sandwich estimator. RSE% < 30% for fixed effects indicates good parameter precision. Confidence intervals that exclude neutral values (0 for additive, 1 for multiplicative effects) indicate statistically significant parameter estimates."
+infer_covar = infer(oral_model_covar_results)
+infer_table = coeftable(infer_covar)
+```
+
+
+---
+
+## A.11 Pharmacodynamic Modeling {#sec-pkpd}
+
+With a well-characterized PK model in hand, we now extend our analysis to pharmacodynamics (PD). Pharmacodynamic modeling links drug exposure (concentrations) to clinical or biological responses. In this section, we demonstrate **multi-endpoint modeling**, where both PK and PD observations are modeled simultaneously within a single framework. This approach corresponds to **Stage 11** in the workflow map, specifically multi-endpoint modeling and sequential PK-PD workflows.
+
+We build an indirect response model where drug concentrations inhibit the degradation of a biomarker, with an effect compartment to capture hysteresis and a Hill coefficient for steep exposure-response. We demonstrate two approaches:
+
+1. **Simultaneous PK-PD modeling** (✓): Estimate all PK and PD parameters jointly
+2. **Sequential PK-PD modeling** (ⓐ): Fix PK parameters and estimate only PD parameters
+
+We model **inhibition of kout** using an E<sub>max</sub> model with Hill coefficient and effect compartment:
+
+**Ce' = Ke0 × (Conc - Ce)**
+
+**INH = I<sub>max</sub> × Ce<sup>γ</sup> / (IC<sub>50</sub><sup>γ</sup> + Ce<sup>γ</sup>)**
+
+**Response' = kin - kout × (1 - INH) × Response**
+
+Where:
+
+- **kin**: Zero-order production rate constant
+- **kout**: First-order degradation rate constant
+- **Ce**: Effect compartment concentration (introduces hysteresis)
+- **Ke0**: Effect compartment equilibration rate constant
+- **I<sub>max</sub>**: Maximum inhibition effect (0-1)
+- **IC<sub>50</sub>**: Effect concentration at half-maximal inhibition
+- **γ (gamma)**: Hill coefficient controlling curve steepness
+
+At baseline (Conc = Ce = 0), Response' = 0 and Response = kin/kout.
+
+### Simultaneous Multi-Endpoint PK-PD Modeling
+
+#### Model Definition
+
+We extend the PK model from the previous section to include PD dynamics. The model includes:
+- **PK component**: Two-compartment oral model with covariates (from Section XXX[3]XXX)
+- **PD component**: Indirect response with Kout inhibition, effect compartment (Ce), and Hill coefficient (γ)
+- **Multi-endpoint observations**: Both CONC (PK) and PD_CONC (PD) in `@derived`
+
+Note that we now use **explicit ODEs** in the `@dynamics` block rather than closed-form solutions. This is necessary because the PD dynamics (Response equation) must be coupled to the PK dynamics (Central compartment concentration).
+
+```{julia}
+mdl_pkpd = @model begin
+    @metadata begin
+        desc = "Simultaneous PK-PD model with indirect response (Kout inhibition, effect compartment, Hill coefficient)"
+        timeu = u"hr"
+    end
+
+    @param begin
+        # PK parameters (from covariate model)
+        θka ∈ RealDomain(lower=0.01, init=1.0)
+        θcl ∈ RealDomain(lower=0.01, init=1.0)
+        θvc ∈ RealDomain(lower=0.01, upper=190.0, init=10.0)
+        θq ∈ RealDomain(lower=0.01, upper=90.0, init=10.0)
+        θvp ∈ RealDomain(lower=0.01, upper=190.0, init=10.0)
+
+        θsexCLF ∈ RealDomain(lower=-10.0, upper=10.0, init=1.0)
+        θvcWEIGHTB ∈ RealDomain(lower=0.01, upper=190.0, init=10.0)
+
+        Ω_pk ∈ PDiagDomain(4)
+
+        σ_add_pk ∈ RealDomain(lower=0.0, init=1.0^2)
+        σ_prop_pk ∈ RealDomain(lower=0.0, init=0.09^2)
+
+        # PD parameters - Kout inhibition with effect compartment and Hill coefficient
+        tvkin ∈ RealDomain(lower=0.001, upper=30, init=1.5)
+        tvkout ∈ RealDomain(lower=0.001, upper=100.0, init=0.03)
+        tvic50 ∈ RealDomain(lower=0.01, upper=100, init=15.0)
+        tvimax ∈ RealDomain(lower=0.0, upper=1.0, init=0.9)
+        tvke0 ∈ RealDomain(lower=0.001, upper=10.0, init=0.08)
+        tvgamma ∈ RealDomain(lower=0.1, upper=10.0, init=2.5)
+
+        Ωpd ∈ PDiagDomain(2)
+
+        σ_add_pd ∈ RealDomain(lower=0.0, init=0.5^2)
+        σ_prop_pd ∈ RealDomain(lower=0.0, init=0.05^2)
+    end
+
+    @covariates SEX WEIGHTB
+
+    @random begin
+        η ~ MvNormal(Ω_pk)
+        ηpd ~ MvNormal(Ωpd)
+    end
+
+    @pre begin
+        # PK parameters
+        Ka = θka
+        COVsexCL =
+            SEX == "Female" ? 1 + θsexCLF :
+            (SEX == "Male" ? 1 :
+             error("Expected SEX to be either \"Female\" or \"Male\" but the value was: $SEX"))
+
+        CL = θcl * COVsexCL * exp(η[1])
+        Vc = θvc * (WEIGHTB / 77)^θvcWEIGHTB * exp(η[2])
+        Q = θq * exp(η[3])
+        Vp = θvp * exp(η[4])
+
+        # PD parameters - Kout inhibition with effect compartment
+        kin = tvkin
+        kout = tvkout
+        ic50 = tvic50 * exp(ηpd[1])
+        imax = tvimax
+        Ke0 = tvke0 * exp(ηpd[2])
+        gamma = tvgamma
+    end
+
+    @vars begin
+        Conc = Central / Vc
+        Ce_safe = max(Ce, 0.0)
+        INH = imax * Ce_safe^gamma / (ic50^gamma + Ce_safe^gamma)
+    end
+
+    @init begin
+        Response = kin / kout
+        Ce = 0.0
+    end
+    @dynamics begin
+        Depot' = -Ka * Depot
+        Central' = Ka * Depot - (CL + Q) / Vc * Central + Q / Vp * Peripheral
+        Peripheral' = Q / Vc * Central - Q / Vp * Peripheral
+        # Effect compartment introduces delay for hysteresis
+        Ce' = Ke0 * (Conc - Ce)
+        # Kout inhibition with Hill coefficient for steep exposure-response
+        Response' = kin - kout * (1 - INH) * Response
+    end
+
+    @derived begin
+        conc_model := @. Central / Vc
+        CONC ~ @. Normal(conc_model, sqrt(σ_add_pk^2 + (conc_model * σ_prop_pk)^2))
+        PD_CONC ~ @. Normal(Response, sqrt(σ_add_pd^2 + (Response * σ_prop_pd)^2))
+    end
+end
+```
+
+#### Key Features of Multi-Endpoint Models
+
+1. **Multiple `@random` distributions**: We have separate random effect vectors for PK (`η`) and PD (`ηpd`). This allows PK and PD random effects to be independent.
+
+2. **`@vars` block**: Defines intermediate variables (here, `Conc`) that can be used in the `@dynamics` block. This improves code readability by avoiding repeated expressions.
+
+3. **Explicit ODEs**: The `@dynamics` block now contains differential equations rather than a closed-form solution name. The PD equation depends on `Conc`, which couples PK and PD dynamics.
+
+4. **Multiple observations in `@derived`**: Both `CONC` and `PD_CONC` are specified, each with its own error model. Pumas will match these to the corresponding observation columns in the data.
+
+#### Initial Parameter Values
+
+We reuse PK parameters from the final covariate model and add initial PD parameter values:
+
+```{julia}
+#| output: false
+init_θ_pkpd = (
+    coef(oral_model_covar_results)...,
+    # PD parameters - Kout inhibition with effect compartment and Hill coefficient
+    tvkin=1.5,          # Production rate (baseline = kin/kout = 50)
+    tvkout=0.03,        # Degradation rate constant
+    tvic50=12.0,        # IC50 for inhibition (mid-range of concentrations)
+    tvimax=0.9,         # Maximum inhibition (90%)
+    tvke0=0.08,         # Effect compartment rate constant (creates hysteresis)
+    tvgamma=1.5,        # Hill coefficient (moderate exposure-response steepness)
+    Ωpd=Diagonal([0.04, 0.04]),  # Variability on IC50 and Ke0
+    σ_add_pd=0.5,       # Additive error (scaled for higher response values)
+    σ_prop_pd=0.05,     # Proportional error
+)
+```
+
+The `...` operator unpacks all parameters from the PK model fit, and we append PD-specific parameters.
+
+#### Prior Predictive Check for PD
+
+Before fitting, simulate to check whether PD initial parameters are reasonable:
+
+```{julia}
+#| out-width: 100%
+#| label: fig-pd-prior-check
+#| fig-cap: "Prior predictive check for PD model showing simulated PD response trajectories using initial parameter estimates. Profiles should be broadly consistent with observed data ranges and patterns. Large deviations indicate need to adjust initial parameter values before model fitting to improve optimization convergence."
+sim_pd = simobs(mdl_pkpd, population, init_θ_pkpd; rng)
+sim_plot(sim_pd; observations=[:PD_CONC],
+    markercolor=:grey,
+    axis=(ylabel="PD Concentration", xlabel="Time (hours)"),
+    figure=(size=(800, 600), fontsize=18),
+    legend=(position=:bottom, framevisible=false, labelsize=14, nbanks=1),)
+```
+
+This plot shows simulated PD responses at initial parameter values. If the simulated profiles are wildly inconsistent with observed PD data, adjust initial values before fitting.
+
+#### Fitting the Simultaneous PK-PD Model
+
+For the simultaneous approach, we estimate all parameters together. However, since we have high confidence in the PK parameter estimates from the previous section, we can **fix the PK parameters** and estimate only PD parameters. This is done using the `constantcoef` argument:
+
+```{julia}
+#| output: false
+pd_ft = fit(
+    mdl_pkpd,
+    population,
+    init_θ_pkpd,
+    FOCE();
+    constantcoef=keys(coef(oral_model_covar_results)),
+    optim_options=(; show_trace=false,),
+)
+```
+
+The `constantcoef` argument takes a collection of parameter names to hold fixed during optimization. Here, `keys(coef(oral_model_covar_results))` returns all PK parameter names, so only PD parameters (`tvkin`, `tvkout`, `tvic50`, `tvimax`, `tvke0`, `tvgamma`, `Ωpd`, `σ_add_pd`, `σ_prop_pd`) are estimated.
+
+::: {.callout-tip}
+## Simultaneous vs. Sequential Estimation
+
+**Simultaneous estimation** (removing `constantcoef`) would re-estimate all PK and PD parameters jointly. This approach:
+- ✅ Accounts for correlations between PK and PD parameters
+- ✅ Provides joint uncertainty quantification
+- ❌ Is more computationally demanding
+- ❌ May be unstable if PK model is not well-identified
+
+**Sequential estimation** (using `constantcoef` to fix PK parameters) is appropriate when:
+- PK data are rich and PK parameters are well-estimated
+- PD data are sparse or limited
+- Computational efficiency is important
+
+For this tutorial, we use the sequential approach within a simultaneous model framework by fixing PK parameters. This is just one of many sequential approaches that can be used. 
+:::
+
+#### Diagnostics for PD
+
+Compute diagnostics:
+
+```{julia}
+#| output: false
+pd_ins = inspect(pd_ft)
+```
+
+Goodness-of-fit for PD observations:
+
+```{julia}
+#| out-width: 100%
+#| label: fig-gof-pd
+#| fig-cap: "Goodness-of-fit diagnostics for PD model showing four standard diagnostic plots: observed vs population predictions, observed vs individual predictions, conditional weighted residuals vs time, and conditional weighted residuals vs predictions. Random scatter around identity line (predictions) and zero line (residuals) indicates adequate model fit to PD data."
+goodness_of_fit(pd_ins; observations=[:PD_CONC],
+    markercolor=(:grey, 0.5),
+    legend=(
+        position=:bottom,
+        framevisible=false,
+        labelsize=18,
+        patchsize=(20, 10),
+    ),
+    figure=(size=(800, 800), fontsize=18))
+```
+
+### Sequential PK-PD Modeling with Parameter Transfer
+
+An alternative to the approach above is **true sequential modeling**, where:
+
+1. Fit the PK model to PK data alone (already done in previous sections)
+2. Extract individual PK parameters (empirical Bayes estimates or EBEs)
+3. Treat individual PK parameters as **covariates** in the PD model
+4. Fit the PD model using only PD observations
+
+This approach completely separates PK and PD estimation and is useful when PK and PD data come from different studies or sampling schemes.
+
+#### Step 1: Extract Individual PK Parameters
+
+From the PK model fit, we can extract individual parameter estimates. One approach is to simulate from the PK model and use the simulated data to construct a new population:
+
+```{julia}
+# | output: false
+sim_df = DataFrame(pd_ins)
+```
+
+Alternatively, you could extract EBEs directly from the `inspect()` object and merge them with the dataset.
+
+#### Step 2: Create PD-Only Population with PK Parameters as Covariates
+
+We construct a new population for PD modeling where individual CL and Vc are covariates:
+
+```{julia}
+pop_pd = read_pumas(
+    sim_df;
+    id=:id,
+    time=:time,
+    observations=[:PD_CONC],
+    covariates=[:Ka, :CL, :Vc, :Q, :Vp, :DOSE,],
+    # amt, evid, cmt as appropriate for dosing
+)
+```
+
+#### Step 3: Define PD Model Using PK Covariates
+
+The PD model no longer estimates PK parameters. Instead, it uses individual CL and Vc as covariates:
+
+```{julia}
+pk_seq_pd = @model begin
+    @metadata begin
+        desc = "Sequential PD model with PK parameter covariates (Kout inhibition, effect compartment, Hill coefficient)"
+        timeu = u"hr"
+    end
+
+    @covariates CL Vc Q Vp Ka DOSE
+
+    @param begin
+        # PD parameters - Kout inhibition with effect compartment and Hill coefficient
+        tvkin ∈ RealDomain(lower=0.001, upper=30, init=1.5)
+        tvkout ∈ RealDomain(lower=0.001, upper=100.0, init=0.03)
+        tvic50 ∈ RealDomain(lower=0.01, upper=100, init=15.0)
+        tvimax ∈ RealDomain(lower=0.0, upper=1.0, init=0.9)
+        tvke0 ∈ RealDomain(lower=0.001, upper=10.0, init=0.08)
+        tvgamma ∈ RealDomain(lower=0.1, upper=10.0, init=2.5)
+
+        Ωpd ∈ PDiagDomain(2)
+
+        σ_add_pd ∈ RealDomain(lower=0.0, init=0.5^2)
+        σ_prop_pd ∈ RealDomain(lower=0.0, init=0.05^2)
+    end
+
+    @random begin
+        ηpd ~ MvNormal(Ωpd)
+    end
+
+    @pre begin
+        # PD parameters - Kout inhibition with effect compartment
+        kin = tvkin
+        kout = tvkout
+        ic50 = tvic50 * exp(ηpd[1])
+        imax = tvimax
+        Ke0 = tvke0 * exp(ηpd[2])
+        gamma = tvgamma
+    end
+
+    @vars begin
+        Conc = Central / Vc
+        Ce_safe = max(Ce, 0.0)
+        INH = imax * Ce_safe^gamma / (ic50^gamma + Ce_safe^gamma)
+    end
+    @init begin
+        Response = kin / kout
+        Ce = 0.0
+    end
+    @dynamics begin
+        Depot' = -Ka * Depot
+        Central' = Ka * Depot - (CL + Q) / Vc * Central + Q / Vp * Peripheral
+        Peripheral' = Q / Vc * Central - Q / Vp * Peripheral
+        # Effect compartment introduces delay for hysteresis
+        Ce' = Ke0 * (Conc - Ce)
+        # Kout inhibition with Hill coefficient for steep exposure-response
+        Response' = kin - kout * (1 - INH) * Response
+    end
+
+    @derived begin
+        PD_CONC ~ @. Normal(Response, sqrt(σ_add_pd^2 + (Response * σ_prop_pd)^2))
+    end
+end
+
+init_θ_pkpd_seq = (
+    # PD parameters - Kout inhibition with effect compartment and Hill coefficient
+    tvkin=1.5,          # Production rate (baseline = kin/kout = 50)
+    tvkout=0.03,        # Degradation rate constant
+    tvic50=12.0,        # IC50 for inhibition (mid-range of concentrations)
+    tvimax=0.9,         # Maximum inhibition (90%)
+    tvke0=0.08,         # Effect compartment rate constant (creates hysteresis)
+    tvgamma=1.5,        # Hill coefficient (moderate exposure-response steepness)
+    Ωpd=Diagonal([0.04, 0.04]),  # Variability on IC50 and Ke0
+    σ_add_pd=0.5,       # Additive error (scaled for higher response values)
+    σ_prop_pd=0.05,     # Proportional error
+)
+```
+
+This model uses **inhibition of Kout** with an effect compartment and Hill coefficient, matching the simultaneous model structure.
+
+#### Step 4: Fit PD Model
+
+```{julia}
+#| output: false
+ft_seq = fit(pk_seq_pd, pop_pd, init_θ_pkpd_seq, FOCE();
+    optim_options=(; show_trace=false), verbose=false,)
+```
+
+This fit estimates only PD parameters, treating individual PK parameters as known.
+
+The estimates should generally be the same, but some numerical differences is to be expected.
+```{julia}
+#| out-width: 100%
+#| label: tbl-sequential-comparison
+#| tbl-cap: "Comparison of PD parameter estimates between simultaneous (pd_ft) and sequential (ft_seq) modeling approaches. Estimates should be similar but not identical due to different uncertainty propagation. Sequential approach treats PK parameters as fixed, while simultaneous approach allows PK-PD parameter interactions during estimation."
+compare_estimates(; pd_ft, ft_seq)
+```
+
+#### Advantages and Disadvantages of Sequential Modeling
+
+**Advantages:**
+- ✅ Computationally efficient (smaller models, faster fits)
+- ✅ Allows separate teams to work on PK and PD
+- ✅ Useful when PK and PD data are from different sources
+- ✅ Simplifies model development (debug PK and PD separately)
+
+**Disadvantages:**
+- ❌ Does not propagate PK parameter uncertainty to PD estimates
+- ❌ Cannot estimate PK-PD parameter correlations
+- ❌ May underestimate overall uncertainty in simulations
+- ❌ Requires extra data manipulation to transfer parameters
+
+For most analyses with rich PK and PD data from the same study, the simultaneous approach (with or without `constantcoef`) is preferred. Sequential modeling is most valuable when data sources differ or when computational constraints are severe.
+
+::: {.callout-note}
+## When to Use Sequential Modeling
+
+Consider sequential PK-PD when:
+- PK and PD data come from different studies or phases
+- PD sampling is very sparse relative to PK
+- You need to rapidly prototype PD models without re-fitting PK
+- Computational resources are limited
+
+For comprehensive final analyses, simultaneous estimation is generally recommended to properly account for uncertainty.
+:::
+
+
+### Summary: Pharmacodynamic Modeling
+
+In this section, we extended our PK model to include pharmacodynamic endpoints, demonstrating multi-endpoint modeling approaches:
+
+**Simultaneous PK-PD Modeling (✓)**
+- Built an indirect response model with Kout inhibition, effect compartment, and Hill coefficient
+- Used explicit ODEs in `@dynamics` to couple PK and PD
+- Specified multiple observations in `@derived` (CONC and PD_CONC)
+- Fixed PK parameters using `constantcoef` to estimate only PD parameters
+- Applied standard diagnostic workflows to PD observations
+
+**Sequential PK-PD Modeling**
+- Outlined an alternative approach using individual PK parameters as covariates
+- Demonstrated complete separation of PK and PD estimation
+- Discussed trade-offs between simultaneous and sequential approaches
+
+With a validated PK-PD model, we're now ready to proceed to simulation for decision support in the next section, where we'll evaluate alternative dosing regimens and assess target attainment metrics to support dosing decisions.
+
+
+::: {.callout-tip}
+## Next Steps: Simulation for Decision Support
+
+In the next section, we will:
+1. Create alternative dosing regimens using `DosageRegimen()`
+2. Simulate concentration and response profiles with `simobs()`
+3. Calculate target attainment metrics from simulated data
+4. Compare scenarios to identify optimal dosing strategies
+
+This represents the culmination of the pharmacometric workflow—translating model-based understanding into actionable clinical recommendations.
+:::
+
+---
+
+## A.12 Simulation for Decision Support {#sec-simulation}
+
+### Clinical Question and Simulation Strategy
+
+Pharmacometrics is inherently different from clinical statistics or biostatistics and one big difference is the focus on model building in pharmacometrics. Models are useful because they allow us to simulate scenarios to answer counter factual questions. This can be used to design clinical trials, apply for clinical trial waivers and more. 
+
+We will show how simulations can be implemented in Pumas to evaluate six alternative dosage regimens: 0 (placebo), 100, 200, 400, 800, or 1600 mg PO daily for 14 days. We are interested in three metrics.
+
+The probability of obtaining a PD_CONC within the therapeutic range (80-150 units) at any time during treatment.
+The time needed to reach the first therapeutic PD_CONC value.
+The total time spent in the TR as a percentage of the dosing interval (i.e., 24 hours) at SS (Day 14).
+
+The estimated population half-life for warfarin per our model is ~41 hours which means it should take roughly 9 days (on average) to achieve steady-state; we extend this to 14 days to ensure each of our virtual subjects is at SS prior to evaluation.
+We will generate a Population of 100 Subjects and use it simulate a total of 600 trials (200 per dosage regimen).
+
+We will not include RUV, since most variability comes from BSV and RUV can make results difficult to interpret.
+
+```{julia}
+tr_low, tr_high = 75, 125
+```
+
+
+```{julia}
+#| echo: false
+#| output: false
+N_per_DOSE = 10
+addl = 5
+ii = 24
+rng_simulation = StableRNG(15438)
+function sample_subject(rng, i, dose)
+    NOMTIME_DOSING = collect(0:ii:addl*ii)
+    NOMTIME_TROUGH = NOMTIME_DOSING .- 0.1
+    NOMTIME_PD = vcat(NOMTIME_TROUGH, [120.1, 120.5, 121, 122, 124, 128, 132, 138, 143.9, 156, 167.9, 191.9, 215.9])
+    NOMTIME_PK = sort(vcat([0.1, 0.5, 1.0, 2.0, 4.0, 8.0, 12.0, 18.0,], NOMTIME_PD))
+    NOMTIME = sort(vcat(NOMTIME_DOSING, NOMTIME_PK))
+    _sexn = rand(rng, [1, 2])
+    _sex = ["Female", "Male"][_sexn]
+    _weight_dists = [Normal(75, 3), Normal(85, 4)]
+    _weightb = rand(rng, _weight_dists[_sexn])
+    N_NOMTIME = length(NOMTIME)
+    _int_dose = Int(round(dose))
+    Subject(
+        id="$(_int_dose)_$i",
+        events=DosageRegimen(dose; addl=5, ii=24),
+        covariates=(SEX=fill(_sex, N_NOMTIME), WEIGHTB=fill(_weightb, N_NOMTIME), DOSE=fill(_int_dose, N_NOMTIME), TRTACT=fill(iszero(_int_dose) ? "Placebo" : string(_int_dose, "mg"), N_NOMTIME), NOMTIME=NOMTIME),
+        covariates_time=NOMTIME,
+    )
+end
+function simulate_df()
+    pop_sim = []
+    for (i_dose, _dose) in enumerate([0, 100, 200, 400, 800, 1600])
+        d_int = Int(round(_dose))
+        for i_n = 1:N_per_DOSE
+            push!(
+                pop_sim,
+                sample_subject(rng_simulation, i_n, _dose),
+            )
+        end
+    end
+    pop_sim = identity.(pop_sim)
+    pd_sim = simobs(
+        mdl_pkpd,
+        pop_sim,
+        coef(pd_ft); rng=rng_simulation, obstimes=[120.1, 120.5, 121, 122, 124, 128, 132, 138, 143.9,],
+        simulate_error=false,)
+    simdf = DataFrame(pd_sim)
+
+    @rsubset! simdf 120 < :time < 144
+    simdf.rep_id .= 1
+    for i = 2:100
+        pd_sim = simobs(
+            mdl_pkpd,
+            pop_sim,
+            coef(pd_ft); rng=rng_simulation, obstimes=[120.1, 120.5, 121, 122, 124, 128, 132, 138, 143.9,],
+            simulate_error=false,)
+        _tmp = DataFrame(pd_sim)
+        @rsubset! _tmp 120 < :time < 144
+        _tmp.rep_id .= i
+
+        simdf = vcat(simdf, _tmp)
+
+    end
+    simdf
+end
+simdf = simulate_df()
+```
+
+```{julia}
+#| echo: false
+_tbl = @chain simdf begin
+    dropmissing(_, :PD_CONC)
+    # Day 14 (SS) observations only
+    filter(df -> df.dosenum == 6, _)
+    # Summarize by dose and tad; l, m, h are 5th,50th,95th percentile
+    combine(
+        groupby(_, [:DOSE, :tad]),
+        :PD_CONC => (x -> quantile(x, [0.05, 0.5, 0.9])') => [:l, :m, :h],
+    )
+end
+sort!(_tbl, [:DOSE, :tad])
+
+# plot layers
+median_layer = mapping(:tad, :m) * visual(Lines; linewidth=1)
+pi_layer = mapping(:tad, :l, :h) * visual(Band, alpha=0.41)
+tr_layer =
+    mapping([tr_low, tr_high], color="TR" => AlgebraOfGraphics.scale(:secondary)) *
+    visual(HLines; linestyle=:dash, alpha=1)
+
+# color and facet map
+dose_renamer_sim = renamer(map(d -> d => "$(Int(d)) mg", unique(simdf.DOSE)))
+cf_map = mapping(
+    color=:DOSE => dose_renamer_sim => "",
+    col=:DOSE => dose_renamer_sim,
+)
+```
+
+```{julia}
+#| out-width: 100%
+#| label: fig-dose-scenarios
+#| fig-cap: "Simulated steady-state PD biomarker profiles (Day 14, dose number 6) for six alternative dosing regimens (0 to 1600 mg). Each panel shows median (line) and 90% prediction interval (shaded band) across 100 simulated trials. Dashed horizontal lines indicate therapeutic range (80-150 units). Higher doses achieve greater biomarker response and longer time in therapeutic range, but may exceed upper target threshold."
+# combine layers and draw
+(data(_tbl) * (pi_layer + median_layer) * cf_map) + tr_layer |> draw(
+    scales(;
+        Y=(; label="Biomarker level"),
+        X=(; label="Time after previous dose, hours"),
+        secondary=(; palette=[:gray30]),
+    );
+    figure=(;
+        size=(6, 4) .* 96,
+        title="Predicted Biomarker Profiles at Dose Number 6 ",
+        subtitle="Median (line), 90%PI (band), TR (dash-line)",
+        titlealign=:left,
+    ),
+    axis=(;
+        limits=(0, nothing, 0, nothing),
+        xticks=0:6:24,
+        xlabelpadding=10,
+        #        yticks = 0:20:80,
+    ),
+    legend=(; orientation=:horizontal, framevisible=false, position=:bottom),
+)
+```
+
+```{julia}
+#| echo: false
+# custom analysis function for table_one
+function war_metrics(col)
+    # Filter out missing and NaN values
+    valid = collect(skipmissing(col))
+    filter!(!isnan, valid)
+    isempty(valid) && return ("-" => "Median", "-" => "95% CI")
+    (
+        median(valid) => "Median",
+        Concat("[", quantile(valid, 0.025), ", ", quantile(valid, 0.975), "]") => "95% CI",
+    )
+end
+
+dfproccessed=@chain simdf begin
+    # drop records where PD_CONC is missing
+    dropmissing(_, :PD_CONC)
+    # first combine step evaluates metrics for individual subjects
+    combine(groupby(_, [:DOSE, :rep_id, :id])) do gdf
+        #! metrics 1 and 2
+        # find index of first PD_CONC value in TR; returns index or nothing 
+        i = findfirst(x -> tr_low ≤ x < tr_high, gdf.PD_CONC)
+        # if `i` was found, return 1 (true), else 0 (false)
+        ta_i = Int(!isnothing(i))
+        # if no index was found, return missing, else return corresponding time
+        tta_i = isnothing(i) ? missing : gdf.time[i]
+
+        #! metric 3
+        # temporary df of SS obs from start of Day 14 (312 hours) that are in TR
+        _ssdf = filter(df -> df.time >= 4*24 && tr_low ≤ df.PD_CONC < tr_high, gdf)
+        # if no obs found, return missing, else return TTR as percentage of ii
+        ttr_i =
+            iszero(nrow(_ssdf)) ? missing :
+            ((last(_ssdf.time) - first(_ssdf.time)) / 24) * 100
+
+        # return a named tuple of the 3 metrics for each subject
+        return (; ta_i, tta_i, ttr_i, )
+    end
+    # second combine summarizes each metric per simulation (rep_id)
+    combine(
+        groupby(_, [:DOSE, :rep_id]),
+        # mean(0|1) * 100 = TA percentage
+        :ta_i => (x -> mean(x) * 100) => :ta,
+        # applies anonymous function to tta_i and ttr_i cols
+        # possible all values could be missing, else could have just used `mean`
+        [:tta_i, :ttr_i] .=> function (c)
+            all(ismissing, c) && return missing
+            mean(skipmissing(c))
+        end .=> [:tta, :ttr],
+    )
+    # from SummaryTables.jl
+_
+end
+```
+
+### Target Attainment Analysis
+
+We evaluate three key efficacy metrics across dose levels:
+
+1. **Probability of Target Attainment (TA)**: Proportion of subjects achieving PD response within therapeutic range (80-150 units) at any time during treatment
+2. **Time to Target (TTA)**: Mean time (hours) to first observation within therapeutic range
+3. **Time in Therapeutic Range (TTR)**: Percentage of 24-hour dosing interval at steady-state spent within therapeutic range
+
+```{julia}
+#| out-width: 100%
+#| label: tbl-target-attainment
+#| tbl-cap: "Target attainment metrics by dose level summarized across 100 simulated trials. Median and 95% confidence intervals shown for: probability of target attainment (TA, percent of subjects reaching therapeutic range), time to target (TTA, hours to first therapeutic observation), and time in therapeutic range at steady-state (TTR, percent of dosing interval). Higher doses increase TA and TTR but may risk exceeding upper therapeutic threshold. Optimal dose balances efficacy and safety considerations."
+table_one(
+    dfproccessed,
+    [
+        :ta => war_metrics => "Probability of TA",
+        :tta => war_metrics => "Time to Target",
+        :ttr => war_metrics => "Time in TR",
+    ],
+    sort=false,
+    groupby=:DOSE => "Dose, mg",
+    show_total=false,
+)
+```
+
+::: {.callout-note}
+## Interpreting Simulation Results for Dosing Decisions
+
+These simulation results support dose selection by:
+- Quantifying trade-offs between efficacy (target attainment) and safety (exceeding upper threshold)
+- Identifying optimal doses for achieving therapeutic targets in majority of patients
+- Providing evidence for regulatory submissions and protocol design
+- Enabling scenario comparisons without additional clinical trials
+
+The final dose selection should integrate these model-based predictions with clinical judgment, safety data, and practical considerations (e.g., formulation constraints, dosing convenience).
+:::

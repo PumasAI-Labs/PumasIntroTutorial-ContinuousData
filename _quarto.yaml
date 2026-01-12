@@ -1,0 +1,38 @@
+format:
+  html:
+    echo: true
+    theme:
+      light: 
+        - styling/company.scss
+        - styling/deeppumas.scss
+      dark:
+        - styling/company.scss
+        - styling/deeppumas-dark.scss
+    code-fold: true
+    code-summary: Show/Hide Code
+    code-tools:
+      caption: Show code
+      source: true
+    embed-resources: true
+    anchor-sections: true
+    toc: true
+    toc-depth: 4
+    toc-expand: 2
+    toc-location: left
+    toc-title: Contents
+    number-sections: true
+    lightbox: true
+
+  pdf:
+    documentclass: scrreprt
+    echo: false
+
+execute:
+  # freeze: auto
+  warning: false
+  error: false
+  daemon: 1800
+  cache: true
+  # svg-conversion: chromote
+
+engines: ['julia']
