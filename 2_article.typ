@@ -1899,5 +1899,5 @@ This work was funded by PumasAI
 
 == Data and Code Availability
 
-[TO BE COMPLETED: Repository links and availability statement. Journal requires sufficient technical details including example dataset and model code as supplementary material.]
+The source text of this journal and a reproducible appendix material with all code, tables and figures is available at https://github.com/PumasAI-Labs/PumasIntroTutorial-ContinuousData
 
