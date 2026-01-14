@@ -183,7 +183,7 @@
 
     This appendix contains the complete code and detailed explanations for all analyses presented in the main text.
     Each section corresponds to a stage in the pharmacometric workflow and provides reproducible examples with full parameter specifications. The appendix 
-    is currently accessible via a #link("https://reimagined-adventure-l1wg78m.pages.github.io/")[appendix website].
+    is currently accessible via a #link("https://pumasai-labs.github.io/PumasIntroTutorial-ContinuousData/")[appendix website].
 
     == A.1 Data Simulation Code
 
@@ -529,7 +529,7 @@ Section 8 discusses platform integration benefits, performance characteristics, 
 
 The complete annotated workflow appears in the Appendix with 9 sections (A.1-A.9) providing full code, implementation details,
 and alternative approaches. Throughout the article, we reference specific Appendix sections for readers seeking additional depth or implementation guidance.
-The appendix is accessible via an #link("https://reimagined-adventure-l1wg78m.pages.github.io/")[appendix website].
+The appendix is accessible via an #link("https://pumasai-labs.github.io/PumasIntroTutorial-ContinuousData/")[appendix website].
 
 == Target Audience and Prerequisites
 
