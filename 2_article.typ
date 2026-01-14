@@ -401,7 +401,7 @@ categorical data (response classifications), time-to-event data (survival analys
 (e.g., PK concentrations with efficacy or safety endpoints).
 
 *Estimation Algorithms*:
-- *Classical*: Naive Pooled (fixed effects only), First Order (FO), First Order Conditional Estimation @lindstrom1990nonlinear (FOCE with or without interaction), Laplacian approximation
+- *Classical*: Naive Pooled (fixed effects only), First Order (FO), First Order Conditional Estimation @lindstrom1990nonlinear (FOCE with interaction), Laplacian approximation
 - *Maximum A Posteriori*: MAP (individual parameter estimation) and JointMAP (simultaneous population and individual estimation)
 - *Expectation-Maximization*: SAEM @kuhn2005maximum (Stochastic Approximation EM, handles complex random effect structures), MCEM @Wei1990 (Monte Carlo EM)
 - *Bayesian*: Full posterior inference via Hamiltonian Monte Carlo @hoffman2014nuts through AdvancedHMC.jl integration, enabling credible intervals and posterior predictive checks
