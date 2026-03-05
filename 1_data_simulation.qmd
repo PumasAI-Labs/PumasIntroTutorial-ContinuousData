@@ -4,7 +4,7 @@ engine: julia
 execute:
   echo: true
 julia:
-    exeflags: ["+Pumas@2.7.1"]
+    exeflags: ["+Pumas@2.8.0"]
 ---
 
 ```{julia}
@@ -20,7 +20,7 @@ using StableRNGs
 
 ```{julia}
 #| output: false
-rng = StableRNG(5438)
+rng = StableRNG(195438)
 ```
 
 ## Data Simulation for Tutorial
@@ -87,7 +87,7 @@ mdl_pkpd = @model begin
                 "Expected SEX to be either \"Female\" or \"Male\" but the value was: $SEX",
             )
         end
-            )
+
 
         CL = θcl * COVsexCL * exp(η[1])
         Vc = θvc * (WEIGHTB / 77)^θvcWEIGHTB * exp(η[2])
@@ -178,8 +178,7 @@ NOMTIME_TROUGH = NOMTIME_DOSING .- 0.1
 NOMTIME_PD = vcat(NOMTIME_TROUGH, [120.1, 120.5, 121, 122, 124, 128, 132, 138, 143.9, 156, 167.9, 191.9, 215.9])
 NOMTIME_PK = sort(vcat([0.1, 0.5, 1.0, 2.0, 4.0, 8.0, 12.0, 18.0,], NOMTIME_PD))
 NOMTIME = sort(vcat(NOMTIME_DOSING, NOMTIME_PK))
-using StableRNGs
-rng = StableRNG(195438)
+
 function sample_subject(rng, i, dose)
     _sexn = rand(rng, [1, 2])
     _sex = ["Female", "Male"][_sexn]
@@ -297,7 +296,7 @@ We perform final data cleaning steps: remove simulation-specific columns, select
 ```{julia}
 # Set nominal time and remove internal simulation variables
 pkpd_df.NOMTIME .= pkpd_df.time
-@select! pkpd_df Not(:time, :Conc, :Ce, :INH, :rate, :ss, :duration, :ii, :route, :tad, :dosenum, :Depot, :Central, :Peripheral, :Response, :Ka, :COVsexCL, :CL, :Vc, :Q, :Vp, :kin, :kout, :ic50, :imax, :Ke0, :gamma, :η_1, :η_2, :η_3, :η_4, :ηpd_1, :ηpd_2)
+@select! pkpd_df Not(:time, :Conc, :Ce, :INH, :rate, :ss, :duration, :ii, :route, :tad, :dosenum, :Depot, :Central, :Peripheral, :Response, :Ka, :COVsexCL, :CL, :Vc, :Q, :Vp, :kin, :kout, :ic50, :imax, :Ke0, :gamma, :η₁, :η₂, :η₃, :η₄, :ηpd₁, :ηpd₂)
 
 # Select final analysis columns
 select!(pkpd_df, [:id, :NOMTIME, :PROFTIME, :PROFDAY, :amt, :evid, :cmt, :ROUTE, :CONC, :PD_CONC, :SEX, :WEIGHTB, :DOSE, :TRTACT])
@@ -317,6 +316,5 @@ rename!(uppercase, pkpd_df)
 #### Export Dataset
 
 ```{julia}
-# Needs to be {julia} not {julia} at publication :) Hello Reviewer if I forgot to flip the switch!
-CSV.write(joinpath(@__DIR__, "data/intro_paper_data.csv"), pkpd_df)
+CSV.write(joinpath(@__DIR__, "data/intro_paper_data.csv"), pkpd_df);
 ```

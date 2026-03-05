@@ -27,6 +27,7 @@
 )
 #show raw: set text(font: "DejaVu Sans Mono")
 
+
 #show ref: it => {
   let (element, target, supplement: supp) = it.fields()
   // cite doesn't have element
@@ -151,15 +152,15 @@
   ),
   abstract: [
     // #word-count(total => [
-    Pumas (Pharmaceutical Modeling and Simulation) is a software ecosystem for quantitative pharmaceutical analytics built on the Julia programming language.
+    Pumas (Pharmaceutical Modeling and Simulation) is a software ecosystem for quantitative pharmaceutical analytics built on the Julia programming language. The use of "pharmaceutical modeling" is deliberate. Pumas is designed as a unified platform for quantitative analytics across the full horizontal of drug development. The classical pharmacometrics segment; non-compartmental analysis, population PK/PD, quantitative systems pharmacology, physiologically based pharmacokinetic modeling, bioequivalence, and in-silico clinical trials represents one part of this continuum. Pumas extends this to machine learning–augmented pharmacology (DeepPumas), epidemiological modeling, pharmacoeconomics, quality-by-design, clinical trial design and optimization, precision dosing, real-world evidence analytics, and many more. While only a subset of these capabilities has been released to date, the architectural vision is to serve the analytical needs of pharmaceutical R&D end-to-end, from target identification through regulatory submission and post-market surveillance. The term "pharmaceutical modeling" reflects this scope: not pharmacometrics alone, but the entirety of quantitative science that underpins modern drug development within a single scientific computing ecosystem.
     This article introduces the Pumas ecosystem and demonstrates its integrated workflow through a complete case study of a multiple ascending dose trial with pharmacokinetic (PK) and pharmacodynamic (PD) endpoints.
 
-    The platform integrates nine capability domains: Clinical Data Interchange Standards Consortium (CDISC)-compliant data preparation, exploratory data analysis with publication-quality visualization,
+    At this moment, the platform integrates many related capability domains: Clinical Data Interchange Standards Consortium (CDISC)-compliant data preparation, exploratory data analysis with publication-quality visualization,
     non-compartmental analysis (NCA) with bioequivalence testing, nonlinear mixed effects (NLME) modeling with multiple estimation algorithms (e.g., First Order Conditional Estimation (FOCE), Laplacian, Stochastic Approximation Expectation Maximization (SAEM), Monte Carlo Expectation Maximization (MCEM), Bayesian),
     simulation with differential equations using a variety of solvers, machine learning integration via DeepPumas, optimal experimental design,
     parallel computing infrastructure, and automated reporting through Quarto integration.
 
-    We demonstrate the unified workflow from data preparation through model-based dose selection. Using a case study with 60 subjects across 6 dose levels,
+    We demonstrate the unified workflow from data preparation through model-based dose selection. The example use case is chosen to be reasonably simple to focus on the workflow itself yet realistic enough to illustrate key concepts. Using a case study with 60 subjects across 6 dose levels,
     we develop a two-compartment pharmacokinetic model with covariate effects (sex on clearance, weight on volume), extend to pharmacodynamics with an indirect response model,
     and simulate alternative dosing regimens to evaluate target attainment metrics.
     The complete analysis executes within a single computational framework, eliminating tool-switching overhead and data conversion steps.
@@ -175,10 +176,7 @@
   ],
   bibliography: bibliography("references.bib"),
   appendix: [
-    #set page(background: rotate(24deg, text(100pt, fill: rgb("#33201d1f"))[
-      *DRAFT*
-    ]))
-
+    
     = Complete Annotated Workflow and Implementation Details
 
     This appendix contains the complete code and detailed explanations for all analyses presented in the main text.
@@ -250,9 +248,6 @@
 
 #total-words words, excluding the appendix and abstract
 
-#set page(background: rotate(24deg, text(100pt, fill: rgb("#33201d1f"))[
-  *DRAFT*
-]))
 = Introduction
 <sec-introduction>
 
@@ -291,6 +286,10 @@ The entire analysis from raw data to regulatory submission documents can be rend
 
 == Ecosystem Capabilities: Complete Pharmaceutical Analytics
 
+In the following section, we provide an overview of the Pumas ecosystem's capabilities across the pharmaceutical analytics lifecycle.
+In the case study, we demonstrate an example workflow for a PKPD modeling analysis, but the platform supports a wide range of applications.
+Please refer to the documentation @pumas2024docs for a comprehensive list of features and capabilities and the tutorials @pumastutorials for specific applications of topics such as Inter Occasion Variability, Censored Data models, Discrete Time Finite Markov models and more.
+
 === Software Ecosystem and Package Architecture
 
 The Pumas platform combines proprietary pharmaceutical modeling capabilities with open-source Julia packages.
@@ -323,8 +322,6 @@ This architecture enables specialized pharmacometric functionality while leverag
 
 This layered architecture means users benefit from continuous improvements in the Julia ecosystem while accessing specialized pharmacometric capabilities through the Pumas platform.
 Open-source components can be used independently for general data science tasks; the proprietary components provide domain-specific modeling and regulatory-ready outputs.
-
-The Pumas ecosystem encompasses nine integrated capability domains that span the drug development lifecycle:
 
 === Data Preparation and Standards
 
@@ -403,7 +400,7 @@ categorical data (response classifications), time-to-event data (survival analys
 *Estimation Algorithms*:
 - *Classical*: Naive Pooled (fixed effects only), First Order (FO), First Order Conditional Estimation @lindstrom1990nonlinear (FOCE with interaction), Laplacian approximation
 - *Maximum A Posteriori*: MAP (individual parameter estimation) and JointMAP (simultaneous population and individual estimation)
-- *Expectation-Maximization*: SAEM @kuhn2005maximum (Stochastic Approximation EM, handles complex random effect structures), MCEM @Wei1990 (Monte Carlo EM)
+- *Expectation-Maximization*: SAEM @kuhn2005maximum (Stochastic Approximation EM, handles complex random effect structures), MCEM @Wei1990 (Monte Carlo EM), and a Variational EM algorithm VEM
 - *Bayesian*: Full posterior inference via Hamiltonian Monte Carlo @hoffman2014nuts through AdvancedHMC.jl integration, enabling credible intervals and posterior predictive checks
 
 Algorithm selection depends on model complexity, data richness, and inference goals.
@@ -412,7 +409,7 @@ Algorithm selection depends on model complexity, data richness, and inference go
 Visual Predictive Checks (VPC) @holford2005vpc @bergstrand2011vpc (with stratification), individual subject fits with Empirical Bayes Estimates (EBE),
 influence diagnostics (identifying subjects with large impact on parameter estimates), and EBE shrinkage analysis @savic2009shrinkage (assessing information content for random effects) and many others.
 
-*Parameter Inference*: Uncertainty quantification via ```julia infer()``` with three methods:
+*Parameter Inference*: Uncertainty quantification via ```julia infer()``` with four methods:
 - *Sandwich estimator* @white1980sandwich: Fast asymptotic standard errors from observed Fisher information (default) or the inverse Hessian.
 - *Bootstrap* @efron1994bootstrap: Non-parametric uncertainty via resampling subjects with replacement, with or without stratification.
 - *Sampling-Importance-Resampling (SIR)*: Resampling of samples from asymptotic distribution weighted by likelihood ratios, providing non-asymptotic confidence intervals.
@@ -446,7 +443,7 @@ and A-optimal (minimize the trace of the inverse Fisher information matrix). App
 
 === Scientific Machine Learning and DeepNLME
 
-*DeepPumas*: Integrates neural networks with mechanistic pharmacokinetic/pharmacodynamic models in a NLME framework with random effects included, aka DeepNLME. Applications include:
+*DeepPumas*: Integrates neural networks with pharmacokinetic/pharmacodynamic models in a NLME framework with random effects included, aka DeepNLME. Applications include:
 - Replace unknown mechanistic components with neural networks (universal differential equations @rackauckas2020universal)
 - Automatic covariate modelling using high-dimensional and complex covariates.
 
@@ -489,26 +486,16 @@ Julia's parallel constructs enable transparent parallelization—many Pumas func
 
 === User Interfaces and Learning Resources
 
-*PumasCP*: Graphical user interface for common analyses requiring no coding:
-- Non-compartmental analysis with automated report generation
-- Bioequivalence testing with parametric and non-parametric methods
-- Dose proportionality assessment with power models and visualization
-- Superposition analysis for multiple-dose prediction
-
+*PumasCP* provides a graphical user interface for common analyses requiring no coding. Each analysis is stored as a separate project and users can go through the required steps while verying intermediate results along the way.
+Users can perform non-compartmental analysis with automated report generation, bioequivalence testing with parametric and non-parametric methods, dose proportionality assessment with power models and visualization and superposition analysis for multiple-dose prediction
 PumasCP lowers entry barrier for users preferring graphical interfaces while maintaining full programmatic access for advanced users.
 
-*AskPumas*: AI-powered learning assistant providing @askpumas2024:
-- Interactive documentation search (natural language queries return relevant documentation sections)
-- Code example generation (request examples for specific analyses, receive working code)
-- Error diagnosis and troubleshooting (paste error messages, receive explanations and solutions)
+*AskPumas* is an AI-powered learning assistant providing @askpumas2024 interactive support for users at all levels. The tool includes interactive documentation search (natural language queries return relevant documentation sections), Code example generation (request examples for specific analyses, receive working code)
+and error diagnosis and troubleshooting (paste error messages, receive explanations and solutions).
 
-*Tutorials*: Comprehensive tutorial collection at tutorials.pumas.ai including a complete onboarding Learning Path series covering:
-- Getting started: installation, first PK model, basic diagnostics
-- Intermediate topics: covariate modeling, multi-endpoint analysis, VPC interpretation
-- Advanced workflows: optimal design, Bayesian inference, machine learning integration
-- Domain-specific: oncology, pediatrics, renal impairment
-
-Tutorials include data files, complete code, and expected outputs for self-paced learning.
+*Tutorials*: Comprehensive tutorial collection at tutorials.pumas.ai including a complete onboarding Learning Path series covering everything form getting started all the way to advanced workflows.
+Tutorials include data files, complete code, and expected outputs for self-paced learning and expects a pharmacometric background but no prior Julia or Pumas experience.
+The tutorials revolve around a case study of Warfarin with both PK and PD components.
 
 *Community Resources*: Active user forums for questions and discussions @pumasdiscourse, GitHub repositories with example workflows and contributed packages,
 and regular training workshops (virtual and in-person).
@@ -582,7 +569,6 @@ Users familiar with MATLAB, Python, or R will find Julia syntax recognizable.
   caption: [Overview of the Pumas pharmacometric workflow. The upper panel depicts the analysis stages corresponding to Sections 3–7, including the iterative
     model refinement cycle. The lower panel lists key Pumas functions used at each stage.],
 ) <fig-workflow>
-
 
 = Case Study Introduction and Data Preparation
 <sec-data-prep>
@@ -753,6 +739,8 @@ variability. See Appendix A.2 for complete concentration-time profile visualizat
   image("figures/fig2-concvstime.png", width: 100%),
   caption: [Observed PK concentration-time profiles for Days 1 and 6. Individual profiles (gray) and mean profiles by dose level (red) demonstrate dose proportionality, drug accumulation to steady-state (Day 6 concentrations higher than Day 1), and between-subject variability in pharmacokinetics. Log-scale y-axis enables visualization of absorption, distribution, and elimination phases across three orders of magnitude.],
 ) <fig-conc-time>
+#v(1em)
+
 
 This visualization reveals:
 - Dose proportionality if any
@@ -1220,8 +1208,12 @@ foce_fit_2cmt = fit(
 ```julia FOCE``` (First Order Conditional Estimation) is the most commonly used algorithm @bauer2019nonmem @upton2014nonmem for population PKPD. Estimation time depends on model complexity
 and data size. For our case study (two-compartment, 50 subjects, ~1000 observations), ```julia FOCE``` completes in minutes.
 
-See Section 5.6 for formal uncertainty quantification via ```julia infer()```.
+See Section 5.6 for formal uncertainty quantification via ```julia infer()```. The results for this model can be summarized in the following table:
 
+#figure(
+include "figures/tab1-infer.typ",
+caption: [Parameter table with uncertainty for the two-compartment pharmacokinetic model.]
+)
 == Inspection Framework
 
 The ```julia inspect()``` function generates all diagnostic quantities:
@@ -1257,6 +1249,7 @@ goodness_of_fit(foce_inspect_2cmt;
   image("figures/fig3-std2cmpt-gof.png", width: 100%),
   caption: [Goodness-of-fit diagnostics for two-compartment model. Panel 1 (top left): Observations vs population predictions (PRED) show scatter around identity line indicating adequate population-level fit. Panel 2 (top right): Observations vs individual predictions (IPRED) demonstrate tighter scatter, confirming random effects capture between-subject variability. Panel 3 (bottom left): Conditional weighted residuals (CWRES) vs PRED show random scatter around zero without funnel pattern, indicating appropriate error model. Panel 4 (bottom right): CWRES vs time show no systematic trends, confirming structural model adequately captures time-dependent processes (absorption, distribution, elimination).],
 ) <fig-gof>
+#v(1em)
 
 Systematic deviations suggest model refinement needed (additional compartments, different error model, covariate effects).
 
@@ -1281,13 +1274,13 @@ Useful for identifying:
 
 == Visual Predictive Check
 
-VPC assesses whether model generates data consistent with observations.
+VPC assesses whether model generates data consistent with observations. We use prediction correction to correct for the heterogeneity in covariate and dose amounts.
 
 ```julia
 # Generate VPC with 200 simulation replicates
 foce_vpc_2cmt = vpc(foce_fit_2cmt;
     covariates = [:tad],  # Stratify by time after dose
-    ensemblealg = EnsembleThreads()  # Parallel simulation
+    prediction_correction = true,
 )
 
 # Plot VPC
@@ -1298,7 +1291,7 @@ vpc_plot(foce_vpc_2cmt;
     figurelegend = (position = :b, orientation = :horizontal),
     axis = (
         yscale = Makie.pseudolog10,
-        ylabel = "Concentration (ng/mL)",
+        ylabel = "Prediction Corrected Concentration (ng/mL)",
         xlabel = "Time (hours)",
     ),
     figure = (size = (1800, 1400), fontsize = 40)
@@ -1307,9 +1300,9 @@ vpc_plot(foce_vpc_2cmt;
 
 #figure(
   image("figures/fig4-std2cmpt-vpc.png", width: 100%),
-  caption: [Visual predictive check for two-compartment model. Observed data 5th, 50th, and 95th percentiles (lines with points) fall within simulated prediction intervals (shaded regions), confirming model adequately captures both central tendency and variability across the concentration-time profile. Parallel simulation with 200 replicates completed in minutes using automatic multithreading.],
+  caption: [Visual predictive check with prediction correction for two-compartment model. Observed data 5th, 50th, and 95th percentiles (lines with points) fall within simulated prediction intervals (shaded regions), confirming model adequately captures both central tendency and variability across the concentration-time profile. Parallel simulation with 200 replicates completed in minutes using automatic multithreading.],
 ) <fig-vpc>
-
+#v(1em)
 
 VPC interpretation:
 - Observed percentiles within prediction intervals → model captures variability correctly
@@ -1474,6 +1467,7 @@ to calculate mean PD responses with standard errors across concentration ranges.
   image("figures/fig5-errelation.png", width: 100%),
   caption: [Exposure-response relationship showing PD biomarker response (IU/L) versus PK concentration (ng/mL) on a log scale. Individual observations are shown as points colored by dose level (100--1600 mg), with binned means and standard errors displayed as black squares with whiskers. PD response increases with increasing PK concentration across the observed range.],
 ) <fig-exposure-response>
+#v(1em)
 
 The exposure-response plot (Figure 5) shows a positive relationship between PK concentration and PD response across the observed dose range. Individual variability around binned means reflects inter-subject differences in pharmacodynamic parameters, captured by the random effect structure. This visualization supports the use of an indirect response model linking drug exposure to biomarker response.
 
@@ -1634,6 +1628,7 @@ with confidence intervals reflecting simulation uncertainty.
     represent 90% prediction intervals from 100 simulated trials. Dashed horizontal lines denote the therapeutic range (75–125). Higher doses produce greater
     biomarker elevation and prolonged time within the therapeutic window.],
 ) <fig-pta>
+#v(1em)
 
 Figure 6 displays simulated steady-state PD profiles for each dose level, showing median response with 90% prediction
 intervals across the virtual population. The therapeutic range boundaries (75-125) overlay the profiles,
@@ -1679,6 +1674,7 @@ enabling visual assessment of target attainment and excursion patterns.
     therapeutic threshold. Optimal dose balances efficacy and safety considerations.
   ],
 ) <tbl-target-attainment>
+#v(1em)
 
 == Dose Selection Rationale
 

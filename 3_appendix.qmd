@@ -2,7 +2,7 @@
 title: "Appendix: Complete Annotated Workflow and Implementation Details"
 subtitle: "A Hands-On Journey Through Pharmacometric Analysis with Pumas"
 julia:
-    exeflags: ["+Pumas@2.7.1"]
+    exeflags: ["+Pumas@2.8.0"]
 execute:
   echo: true
   cache: true
@@ -59,6 +59,338 @@ using Random
 ```{julia}
 #| output: false
 rng = Random.seed!(5438)
+```
+
+```{julia}
+#| output: false
+# Custom functions for parameter tables and inference tables
+using DataFrames
+using Typst_jll
+
+η_coefficient_of_variation(fpm::Pumas.AbstractFittedPumasModel) =
+    _η_coefficient_of_variation(fpm.model, coef(fpm), Pumas.getvvrandeffsorth(fpm))
+
+function _η_coefficient_of_variation(
+    m::PumasModel,
+    param::NamedTuple,
+    vvrandeffsorth::AbstractVector,
+)
+    rfxs = m.random(Pumas.EMPTY_SUBJECT, param)
+    normal_rfxs = ParamSet(
+        Pumas.ntfilter(
+            x -> x isa Union{Normal,MvNormal,LogNormal,MvLogNormal},
+            rfxs.params,
+        ),
+    )
+    if length(normal_rfxs.params) != length(rfxs.params)
+        names_nonnormal_rfxs = keys(Base.structdiff(rfxs.params, normal_rfxs.params))
+        @warn(
+            "η_coefficient_of_variation cannot be computed for $(join(names_nonnormal_rfxs, ", ", " and ")): only random effects of type `Normal`, `MvNormal`, `LogNormal` or `MvLogNormal` are supported"
+        )
+    end
+
+    # Early exit if there are no `Normal` or `MvNormal` random effects
+    if isempty(normal_rfxs.params)
+        return (;)
+    end
+
+    vtrandeffs = map(
+        NamedTuple{keys(normal_rfxs)} ∘
+        Pumas.TransformVariables.transform(Pumas.totransform(rfxs)),
+        vvrandeffsorth,
+    )
+    cv =
+        map(NamedTuple{keys(normal_rfxs)}(keys(normal_rfxs)), normal_rfxs.params) do k, rfx
+            return sqrt.(exp.(std(map(Base.Fix2(getfield, k), vtrandeffs))) .- 1)
+        end
+    return cv
+end
+
+
+function _infer_footnote(inf)
+    if inf.vcov isa Pumas.Bootstraps
+        strat_string = if isempty(inf.vcov.stratify_by)
+            "without stratified resampling"
+        else
+            "with stratified resampling based on $(inf.vcov.stratify_by)"
+        end
+        "based on bootstrap $(strat_string) with $(length(inf.vcov.fits)) replications ($(length(filter(x->x isa Pumas.FittedPumasModel, inf.vcov.fits))) successful fits)."
+    elseif inf.vcov isa Pumas.CovarianceEstimate
+        "based on the asymptotic variance-covariance matrix."
+    elseif inf.vcov isa Pumas.PumasFailedCovariance
+        "not available; asymptotic variance-covariance matrix estimation failed."
+    else
+        throw(ErrorException("Simulated inference not supported"))
+    end
+end
+"""
+    _unpack_entries_omega(nt::NamedTuple, restrict = nothing)
+
+`restrict` controls which entries are included in the output:
+- `nothing` — include everything
+- `(:Ω, :Ωvc)` (tuple/vector of Symbols) — include all elements of the named parameters
+- `Dict(:Ω => [1, 3])` — include only specific diagonal indices per parameter
+"""
+function _unpack_entries_omega(nt::NamedTuple, restrict = nothing)
+    # Normalize tuple/vector of symbols to a Dict with no index restriction
+    if restrict isa Union{Tuple{Vararg{Symbol}},AbstractVector{Symbol}}
+        restrict = Dict(k => nothing for k in restrict)
+    end
+    mapping = Pair{String,Any}[]
+    subscript(s) = join(Char(0x2080) + Int(c) for c in s)
+    for (k, v) in pairs(nt)
+        if isnothing(restrict) || k in keys(restrict)
+            if v isa Number
+                push!(mapping, "$k" => v)
+            else
+                for (i, item) in enumerate(v)
+                    idx_filter = isnothing(restrict) ? nothing : restrict[k]
+                    if isnothing(idx_filter) || i in idx_filter
+                        sub = join(subscript.(reverse(digits(i))))
+                        push!(mapping, string(k, sub, ",", sub) => item)
+                    end
+                end
+            end
+        end
+    end
+    return mapping
+end
+CI_label(fpmi) = string(
+    "Confidence interval at ",
+    round(100 * fpmi.level, sigdigits = 4),
+    "% confidence level",
+)
+cond_info(
+    fpmi::Pumas.FittedPumasModelInference{<:Any,<:Pumas.PumasFailedCovariance,<:Any};
+    correlation,
+) = nothing
+cond_info(
+    fpmi::Pumas.FittedPumasModelInference{<:Any,<:Pumas.CovarianceEstimate,<:Any};
+    correlation,
+) = cond(fpmi; correlation)
+cond_info(
+    fpmi::Pumas.FittedPumasModelInference{<:Any,<:Pumas.Bootstraps,<:Any};
+    correlation,
+) = nothing
+cond_info(
+    fpmi::Pumas.FittedPumasModelInference{<:Any,<:Pumas.SimulatedInference,<:Any};
+    correlation,
+) = nothing
+"""
+    parameter_table(fpmi; eta_omega::Union{Nothing,Dict{Symbol,Symbol}}, cv_vars, correlation_condition = true, include_se = true, include_rse = true, include_shrinkage = true)
+
+`eta_omega` must be a `Dict{Symbol,Symbol}` mapping random effect names to their
+variance parameter names, e.g. `Dict(:η => :Ω)` or `Dict(:η => :Ω, :κ => :Ω_IOV)`.
+Pass `nothing` to omit shrinkage and CV columns.
+"""
+function parameter_table(fpmi; eta_omega::Union{Nothing,Dict{Symbol,Symbol}}, cv_vars, correlation_condition = true, include_se = true, include_rse = true, include_shrinkage = true)
+
+    _footnotes = []
+    coff = coeftable(fpmi)
+    if fpmi.vcov isa Pumas.PumasFailedCovariance
+        coff.se .= missing
+        coff.relative_se .= missing
+        coff.ci_lower .= missing
+        coff.ci_upper .= missing
+    end
+    descriptions = Dict(Pumas._markdown_descriptions_params(fpmi.fpm.model))
+
+    insertcols!(coff, 2, :description => [descriptions[p] for p in coff.parameter])
+    # Set constant true to missing not NaN
+    @rtransform! coff :se = :constant ? missing : :se
+    @rtransform! coff :relative_se = :constant ? missing : :relative_se
+
+    @rtransform! coff :ci_lower = :constant ? missing : :ci_lower
+    @rtransform! coff :ci_upper = :constant ? missing : :ci_upper
+    combine_ci!(coff)
+    colmetadata!(coff, :CI, "label", string(100 * fpmi.level, "% ", "CI"), style = :note)
+
+    # Column abbreviation definitions
+    _abbrevs = ["CI: Confidence Interval"]
+
+    has_shrinkage = !isnothing(eta_omega) && include_shrinkage
+    # Munge shrinkage
+    if has_shrinkage
+        ηmap = ηshrinkage(fpmi.fpm)
+        ηmap = _unpack_entries_omega(
+            NamedTuple{replace(keys(ηmap), eta_omega...)}(values(ηmap)),
+        )
+        ηdf = DataFrame(parameter = first.(ηmap), shrinkage = last.(ηmap))
+        ηdf.shrinkage .*= 100
+
+        # Add Shrinkage
+        df_sh1 = leftjoin(coff, ηdf; on = :parameter, order = :left)
+        colmetadata!(df_sh1, :shrinkage, "label", "Shrinkage [%]", style = :note)
+        push!(_abbrevs, "Shrinkage: η shrinkage")
+    else
+        df_sh1 = coff
+    end
+
+    has_cv = !isnothing(cv_vars)
+    # Munge CV
+    if has_cv
+        ηmap = η_coefficient_of_variation(fpmi.fpm)
+        ηmap = _unpack_entries_omega(
+            NamedTuple{replace(keys(ηmap), eta_omega...)}(values(ηmap)),
+            cv_vars,
+        )
+        ηdf = DataFrame(parameter = first.(ηmap), CV = last.(ηmap))
+        ηdf.CV .*= 100
+
+        # Add CV
+        df_sh1 = leftjoin(df_sh1, ηdf; on = :parameter, order = :left)
+        colmetadata!(df_sh1, :CV, "label", "CV [%]", style = :note)
+        push!(_abbrevs, "CV: η coefficient of variation")
+    end
+
+    colmetadata!(df_sh1, :parameter, "label", "Parameter", style = :note)
+    colmetadata!(df_sh1, :description, "label", "Description", style = :note)
+    colmetadata!(df_sh1, :constant, "label", "Constant", style = :note)
+    colmetadata!(df_sh1, :estimate, "label", "Estimate", style = :note)
+
+    if include_se
+        push!(_abbrevs, "SE: Standard Error")
+        colmetadata!(df_sh1, :se, "label", "SE", style = :note)
+    else
+        select!(df_sh1, Not(:se))
+    end
+
+    df_sh1.relative_se .*= 100
+    if include_rse
+        push!(_abbrevs, "RSE: Relative Standard Error")
+        colmetadata!(df_sh1, :relative_se, "label", "RSE [%]", style = :note)
+    else
+        select!(df_sh1, Not(:relative_se))
+    end
+
+    # Build footnotes: abbreviations → inference method → divider → metrics
+    push!(_footnotes, join(_abbrevs, " • "))
+
+    _metrics = String[]
+    cond_fpmi = cond_info(fpmi; correlation = correlation_condition)
+    if !isnothing(cond_fpmi)
+        corr_label = correlation_condition ? "correlation" : "covariance"
+        push!(_metrics, "Condition number ($corr_label): $(round(cond_fpmi, sigdigits = 6))")
+    end
+    push!(_metrics, "Log-likelihood: $(round(loglikelihood(fpmi.fpm), sigdigits = 6))")
+    epsshrinkage = ϵshrinkage(fpmi.fpm)
+    if !isempty(epsshrinkage)
+        eps_parts = [string(k, " = ", round(v * 100, sigdigits = 4), "%") for (k, v) in pairs(epsshrinkage)]
+        push!(_metrics, "ϵ-shrinkage: " * join(eps_parts, ", "))
+    end
+    push!(_footnotes, join(_metrics, " • "))
+    push!(_footnotes, CI_label(fpmi) * " " * _infer_footnote(fpmi))
+
+    metadata!(df_sh1, "footnotes", _footnotes; style = :note)
+    return df_sh1
+end
+
+function infer_table(
+    fpmi;
+    round_digits = 3,
+    round_mode = :auto,
+    eta_omega = nothing,
+    cv_vars = nothing, # needs to generate names of parameters for rows to calculate cv for
+    include_param_name = true,
+    include_se = false,
+    include_rse = true,
+    include_descriptions = true,
+    include_shrinkage = true,
+    caller_path = nothing,
+    path = nothing,
+)
+    coff = parameter_table(fpmi; eta_omega, cv_vars, include_se, include_rse, include_shrinkage)
+    partable_footnotes = metadata(coff, "footnotes")
+    constant_to_annotated!(coff)
+    max_text_col = 0
+    if include_param_name
+        __names = @. Cell(coff.parameter; halign = :left)
+        rest = [__names;;]
+        max_text_col += 1
+    else
+        select!(coff, Not(:parameter))
+    end
+    if include_descriptions
+        _description = @. Cell(coff.description; halign = :left)
+        if include_param_name
+            rest = hcat(rest, _description)
+        else
+            rest = [_description;;]
+        end
+        max_text_col += 1
+    else
+        select!(coff, Not(:description))
+    end
+    #_constant = @. Cell(coff.constant; halign = :center)
+    _para = @. Cell(coff.estimate)
+    if max_text_col == 0
+        rest = [_para;;]
+    else
+        rest = hcat(rest, _para)
+    end
+
+    if include_se
+        rest = hcat(rest, @. Cell(coff.se))
+    end
+    if include_rse
+        rest = hcat(rest, @. Cell(coff.relative_se))
+    end
+
+    rest = hcat(rest, @. Cell(coff.CI))
+
+    if include_shrinkage && !isnothing(eta_omega)
+        rest = hcat(rest, @. Cell(coff.shrinkage))
+    end
+
+    if !isnothing(cv_vars)
+        _CV = @. Cell(coff.CV)
+        rest = hcat(rest, _CV)
+    end
+    rename!(coff, labels(coff))
+    header_row = permutedims(names(coff))
+
+    source_footnotes = []
+    !isnothing(caller_path) && push!(source_footnotes, "Program Source: $(caller_path)")
+    !isnothing(path) && push!(source_footnotes, "Source: $(path)")
+
+    header = [
+        Cell(h; halign = i > max_text_col ? :center : :left) for
+        (i, h) in enumerate(header_row)
+    ]
+
+    tab = Table(
+        [header; rest];
+        header = 1,
+        footnotes = vcat(partable_footnotes, source_footnotes),
+        round_digits,
+        round_mode,
+        postprocess = [ReplaceMissing(; with = "-")],
+    )
+
+    tab
+end
+
+function combine_ci!(df)
+    df.CI = map(df.ci_lower, df.ci_upper) do l, u
+        any(ismissing, (l, u)) ? Concat(missing, ", ", missing) : Concat(l, ", ", u)
+    end
+    select!(df, Not(:ci_lower, :ci_upper))
+    df
+end
+
+function constant_to_annotated!(df)
+    annotate(x) = Annotated(x, "Fixed to starting values during estimation", label = "†")
+    df.estimate = map(x -> x[1] ? annotate(x[2]) : x[2], zip(df.constant, df.estimate))
+    select!(df, Not(:constant))
+end
+
+function table_to_typst(name::AbstractString, directory, table)
+    typfile = joinpath(directory, name)
+
+    open(typfile, "w") do io
+        show(io, MIME"text/typst"(), table)
+    end
+end
 ```
 
 # Introduction: Your Guide to Integrated Pharmacometric Analysis
@@ -129,7 +461,7 @@ In any pharmacometric analysis, **data preparation is where rigor begins**. Befo
 
 ### The Starting Point: Loading Raw Data
 
-Our journey begins with a CSV file exported from the clinical database—the standard format for pharmacometric analyses. Let's load it and take our first look:
+Our journey begins with a CSV file exported from the clinical database. Let's load it and take our first look:
 
 ```{julia}
 path = joinpath(@__DIR__, "data", "intro_paper_data.csv")
@@ -478,7 +810,6 @@ mean_layer = data(df_mean) *
                  row=:PROFDAY => day_renamer,
                  col=:TRTACT => "Dose") *
              visual(Lines; color=:red, linewidth=4)
-
 plt_spgt_mean = draw(
     individual_layer + mean_layer;
     axis=(;
@@ -497,7 +828,7 @@ plt_spgt_mean = draw(
     ),
     figure=(; size=(1600, 1200), fontsize=28),
 )
-# save("./figures/fig2-concvstime.png", plt_spgt_mean; px_per_unit = 2)
+save("./figures/fig2-concvstime.png", plt_spgt_mean; px_per_unit = 2)
 plt_spgt_mean
 ```
 
@@ -798,7 +1129,7 @@ plt_er_ss_binned = draw(
     legend=(; position=:bottom),
     figure=(; size=(1000, 800), fontsize=24)
 )
-# save("./figures/fig5-errelation.png", plt_er_ss_binned; px_per_unit = 2)
+save("./figures/fig5-errelation.png", plt_er_ss_binned; px_per_unit = 2)
 plt_er_ss_binned
 ```
 
@@ -1384,7 +1715,7 @@ observations_vs_ipredictions(foce_inspect; pk_diagnostics_kwargs...)
 wresiduals_vs_time(foce_inspect; pk_diagnostics_kwargs...)
 ```
 
-Each function produces focused plots for specific diagnostics. Additional diagnostic functions like `wresiduals_vs_predictions()` and `observations_vs_ipredictions()` are detailed in Appendix XXX[C]XXX.
+Each function produces focused plots for specific diagnostics.
 
 #### Individual Subject Fits
 
@@ -1402,13 +1733,13 @@ This generates individual concentration-time plots overlaying observed data with
 
 #### Visual Predictive Check
 
-VPC is a simulation-based diagnostic comparing observed data quantiles to model-predicted quantile intervals. Agreement indicates adequate model predictive performance.
+VPC is a simulation-based diagnostic comparing observed data quantiles to model-predicted quantile intervals. Agreement indicates adequate model predictive performance. We use prediction correction to correct for the heterogeneity in covariates and the dose amounts. 
 
 ```{julia}
-foce_vpc = vpc(foce_fit; covariates = [:tad])
+foce_vpc = vpc(foce_fit; covariates = [:tad], prediction_correction = true)
 ```
 
-The `covariates = [:tad]` argument bins observations by time after dose. The `vpc()` function simulates many replicates of the dataset and computes prediction intervals for the 5th, 50th, and 95th percentiles.
+The `covariates = [:tad]` argument bins observations by time after dose. The option `prediction_correction=true` means that we produce a pcVPC to handle the difference in covariates and dose amounts. The `vpc()` function simulates many replicates of the dataset and computes prediction intervals for the 5th, 50th, and 95th percentiles.
 
 ```{julia}
 #| out-width: 100%
@@ -1426,7 +1757,7 @@ plt_vpc = vpc_plot(foce_vpc,
     axis=(yscale=Makie.pseudolog10,
         xticks = 0:8:120,
         yticks = 0:20:120,
-        ylabel="Concentration (ng/mL)",
+        ylabel="Prediction Corrected Concentration (ng/mL)",
         xlabel="Time (hours)",
         spinewidth=4,
         rightspinevisible=false,
@@ -1520,6 +1851,22 @@ foce_fit_2cmt = fit(
 )
 ```
 
+With inference results
+
+```{julia}
+#| output: false
+foce_inference_2cmt = infer(foce_fit_2cmt)
+```
+
+We can also display this as a table:
+
+```{julia}
+inf_table = infer_table(foce_inference_2cmt; eta_omega=Dict(:η=>:Ω_pk,), cv_vars=(:Ω_pk,), include_descriptions=false)
+```
+```{julia}
+#| output: false
+table_to_typst("tab1-infer.typ", joinpath(@__DIR__, "figures"), inf_table)
+```
 #### Evaluate Two-Compartment Model
 
 Compute diagnostics and compare to one-compartment model to assess improvement.
@@ -1543,7 +1890,7 @@ fig3_std2cmpt_gof = goodness_of_fit(foce_inspect_2cmt;
                         ),
                 figure = (size = (800, 800), fontsize = 18)
 )
-# save("./figures/fig3-std2cmpt-gof.png", fig3_std2cmpt_gof; px_per_unit = 2)
+save("./figures/fig3-std2cmpt-gof.png", fig3_std2cmpt_gof; px_per_unit = 2)
 fig3_std2cmpt_gof
 ```
 
@@ -1579,13 +1926,13 @@ end
 ```{julia}
 foce_vpc_2cmt = vpc(foce_fit_2cmt; 
                covariates = [:tad],
-               ensemblealg = EnsembleThreads())
+               prediction_correction = true,)
 ```
 
 ```{julia}
 #| out-width: 100%
 #| label: fig-vpc-2cmt
-#| fig-cap: "Visual predictive check for two-compartment model. Observed percentiles should show improved alignment with prediction intervals compared to one-compartment VPC (@fig-vpc-1cmt), particularly in the distribution phase (early time points). Adequate coverage of observed data by prediction bands indicates satisfactory model predictive performance."
+#| fig-cap: "Visual predictive check with prediction correction for two-compartment model. Observed percentiles should show improved alignment with prediction intervals compared to one-compartment VPC (@fig-vpc-1cmt), particularly in the distribution phase (early time points). Adequate coverage of observed data by prediction bands indicates satisfactory model predictive performance."
 plt_vpc_2cmt = vpc_plot(foce_vpc_2cmt,
     observations=true,
     markercolor=:grey,
@@ -1598,14 +1945,14 @@ plt_vpc_2cmt = vpc_plot(foce_vpc_2cmt,
     axis=(yscale=Makie.pseudolog10,
         xticks = 0:8:120,
         yticks = 0:20:120,
-        ylabel="Concentration (ng/mL)",
+        ylabel="Prediction Corrected Concentration (ng/mL)",
         xlabel="Time (hours)",
         spinewidth=4,
         rightspinevisible=false,
         topspinevisible=false),
     figure=(size=(1800, 1400), fontsize=40))
  
-# save("./figures/fig4-std2cmpt-vpc.png", plt_vpc_2cmt; px_per_unit = 2)   
+save("./figures/fig4-std2cmpt-vpc.png", plt_vpc_2cmt; px_per_unit = 2)   
 plt_vpc_2cmt
 ```
 
@@ -1937,7 +2284,7 @@ The `infer()` function computes asymptotic standard errors using the sandwich es
 #| label: tbl-parameter-inference
 #| tbl-cap: "Parameter estimates with asymptotic standard errors, 95% confidence intervals, and relative standard errors (RSE%) computed using sandwich estimator. RSE% < 30% for fixed effects indicates good parameter precision. Confidence intervals that exclude neutral values (0 for additive, 1 for multiplicative effects) indicate statistically significant parameter estimates."
 infer_covar = infer(oral_model_covar_results)
-infer_table = coeftable(infer_covar)
+coefs_covar = coeftable(infer_covar)
 ```
 
 
@@ -2541,7 +2888,7 @@ fig6_pta = (data(_tbl) * (pi_layer + median_layer) * cf_map) + tr_layer |> draw(
     ),
     legend=(; orientation=:horizontal, framevisible=false, position=:bottom, nbanks=2, labelsize=10,),
 )
-# save("./figures/fig6-pta.png", fig6_pta, px_per_unit=2)
+save("./figures/fig6-pta.png", fig6_pta, px_per_unit=2)
 fig6_pta
 ```
 

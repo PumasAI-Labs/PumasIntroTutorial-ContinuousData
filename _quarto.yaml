@@ -30,7 +30,7 @@ format:
 execute:
   # freeze: auto
   warning: false
-  error: false
+  error: true
   daemon: 1800
   cache: true
   # svg-conversion: chromote
